@@ -334,9 +334,10 @@ def _stage(
 
 
 def _spark_hash(executor: SparkExecutor, table: str) -> str:
+    # A BIGINT sum of 64-bit hashes overflows; DECIMAL(38,0) holds it exactly.
     rows = executor.execute(
-        "SELECT sha2(cast(sum(xxhash64(query_id, item_id, cast(label AS STRING))) AS STRING), 256) "
-        f"AS content_hash FROM {table}"
+        "SELECT sha2(cast(sum(cast(xxhash64(query_id, item_id, cast(label AS STRING)) "
+        f"AS DECIMAL(38,0))) AS STRING), 256) AS content_hash FROM {table}"
     )
     return str(rows[0]["content_hash"])
 
@@ -429,7 +430,7 @@ def build_spark(
             "min_day": str(counts["min_day"]) if counts["min_day"] else None,
             "max_day": str(counts["max_day"]) if counts["max_day"] else None,
             "content_hash": _spark_hash(executor, table),
-            "content_hash_alg": "spark-xxhash64-sum-sha2",
+            "content_hash_alg": "spark-xxhash64-decimal-sum-sha2",
         }
         if split_name in metric_splits:
             needed = ["query_id", "item_id", "query_ts", "event_day", "label"]
