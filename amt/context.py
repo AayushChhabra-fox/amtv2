@@ -71,6 +71,15 @@ def build_context(
                 "No ensembles and no heavy tuning on a draft.",
             ]
         )
+    if role == "planner":
+        lines.extend(
+            [
+                "",
+                "Web search and page fetch are available for ranking methods, papers, "
+                "and library docs. Do not put brief data, table names, or metric values "
+                "in a query. List every page you used in references.",
+            ]
+        )
     lines.extend(["", "Files:"])
     for path in inputs or _default_inputs(role, root, brief, node_id):
         lines.append(f"  read {path}")
@@ -200,7 +209,9 @@ def _output_contract(role: str) -> str:
         return (
             "Return one JSON object with a candidates list. Each candidate needs "
             "id, operator, family, claim, fit_argument, cheap_test, kill_if, and est_cost. "
-            "improve also needs parent_id and change. draft must not set parent_id."
+            "improve also needs parent_id and change. draft must not set parent_id. "
+            "Web search is available. When an idea came from a page you opened, "
+            "list that http(s) URL in references (at most 5)."
         )
     if role == "critic":
         return (

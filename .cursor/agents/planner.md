@@ -26,6 +26,17 @@ Return one JSON object that matches `amt/json_schemas/proposal_batch.schema.json
 
 A draft must not set `parent_id`. An improvement changes exactly one thing and names it in `change`. A combine names one parent in `parent_id` and the other parent in `change`.
 
+- `references`: up to 5 `http` or `https` URLs you actually read. Omit the field when the idea did not come from an outside source.
+
+## Research
+
+You may use web search and page fetch before you propose. Use them to read about ranking methods, papers, and library documentation (arXiv, GitHub, package docs).
+
+- Search queries must not include brief data, table names, user data, or metric values.
+- Do not fetch anything about this repository's splits or holdouts.
+- When an idea comes from a page you opened, put that URL in `references`.
+- Do not cite a page you did not open.
+
 ## What to propose
 
 - Round 1 drafts are simple and from distinct families. No ensembles and no large tuning sweeps.

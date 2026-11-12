@@ -11,9 +11,10 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 ApprovalMode = Literal["none", "every_stage", "round_shortlist"]
 ScaleMode = Literal["search", "calibration", "small", "full"]
@@ -222,6 +223,23 @@ class Candidate(BaseModel):
     cheap_test: str = Field(min_length=1)
     kill_if: str = Field(min_length=1)
     est_cost: float = Field(ge=0, description="Estimated DBU for the next rung.")
+    references: list[str] = Field(
+        default_factory=list,
+        max_length=5,
+        description="http(s) URLs the planner read before proposing this candidate.",
+    )
+
+    @field_validator("references")
+    @classmethod
+    def _reference_urls(cls, value: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for item in value:
+            text = item.strip()
+            parsed = urlparse(text)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ValueError(f"reference must be an http(s) URL: {item}")
+            cleaned.append(text)
+        return cleaned
 
     @model_validator(mode="after")
     def _operator_links(self) -> Candidate:

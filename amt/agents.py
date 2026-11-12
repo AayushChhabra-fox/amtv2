@@ -82,6 +82,39 @@ def cursor_agent_bin() -> str | None:
     return shutil.which("cursor-agent") or shutil.which("agent")
 
 
+_WEB_TOOLS: bool | None = None
+
+
+def cursor_agent_web_tools_available() -> bool:
+    """True when this CLI can search the web from plan mode.
+
+    ``--help`` does not name web search on its own. Plan mode is read-only, and
+    ``--print`` says the process has every tool, so web search is in that set.
+    The result is cached for the process. A missing signal is a hard failure
+    for a live planner call, not a silent skip.
+    """
+
+    global _WEB_TOOLS
+    if _WEB_TOOLS is not None:
+        return _WEB_TOOLS
+    binary = cursor_agent_bin()
+    if binary is None:
+        _WEB_TOOLS = False
+        return False
+    completed = subprocess.run(
+        [binary, "--help"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    text = f"{completed.stdout}\n{completed.stderr}".lower()
+    has_plan = "--mode" in text and "plan" in text
+    has_tools = "web search" in text or "all tools" in text
+    _WEB_TOOLS = completed.returncode == 0 and has_plan and has_tools
+    return _WEB_TOOLS
+
+
 def cursor_agent_logged_in() -> bool:
     binary = cursor_agent_bin()
     if binary is None:
@@ -187,6 +220,11 @@ def run_role(
             )
             started = time.perf_counter()
     try:
+        if mode == "cursor" and role == "planner" and not cursor_agent_web_tools_available():
+            raise RuntimeError(
+                "planner requires cursor-agent web search in plan mode; "
+                "the CLI help text does not offer it"
+            )
         if mode == "cursor":
             output = _run_cursor(
                 role, root, prompt, model=chosen_model, timeout_s=timeout
@@ -208,6 +246,7 @@ def run_role(
                 "ok": False,
                 "latency_s": round(time.perf_counter() - started, 4),
                 "tokens": None,
+                "references_count": _references_count(role, None),
                 "error": str(exc),
             },
         )
@@ -221,6 +260,7 @@ def run_role(
             "ok": True,
             "latency_s": round(time.perf_counter() - started, 4),
             "tokens": tokens,
+            "references_count": _references_count(role, output),
         },
     )
     return output
@@ -260,6 +300,27 @@ def _parse_embedded(value: object) -> object | None:
         except json.JSONDecodeError:
             return None
     return None
+
+
+def _references_count(role: str, output: object) -> int | None:
+    """How many cited URLs a planner call returned. Other roles log null."""
+
+    if role != "planner":
+        return None
+    payload = coerce_role_output(output) if output is not None else None
+    if not isinstance(payload, dict):
+        return 0
+    candidates = payload.get("candidates") or payload.get("proposals") or []
+    if not isinstance(candidates, list):
+        return 0
+    count = 0
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        refs = item.get("references") or []
+        if isinstance(refs, list):
+            count += len(refs)
+    return count
 
 
 def _token_count(output: dict) -> int | None:

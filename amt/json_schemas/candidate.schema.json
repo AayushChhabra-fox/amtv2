@@ -85,6 +85,15 @@
       "minimum": 0,
       "title": "Est Cost",
       "type": "number"
+    },
+    "references": {
+      "description": "http(s) URLs the planner read before proposing this candidate.",
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 5,
+      "title": "References",
+      "type": "array"
     }
   },
   "required": [

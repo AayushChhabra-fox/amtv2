@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
 import yaml
 
 from amt.agents import run_role
@@ -328,6 +329,61 @@ def test_round_shortlist_pauses_before_compute(tmp_path: Path, monkeypatch) -> N
     assert state.approval_gate == "CRITIQUE"
     assert not (tmp_path / "candidates" / "c00" / "model.py").exists()
     assert FakeJobs(tmp_path).submit_count() == 0
+
+
+def test_web_tools_check_reads_plan_mode_help(monkeypatch) -> None:
+    import subprocess
+
+    from amt import agents
+
+    monkeypatch.setattr(agents, "_WEB_TOOLS", None)
+    monkeypatch.setattr(agents, "cursor_agent_bin", lambda: "cursor-agent")
+
+    def fake_run(command, **kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="--mode plan\nHas access to all tools, including write and shell.\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(agents.subprocess, "run", fake_run)
+    assert agents.cursor_agent_web_tools_available() is True
+    monkeypatch.setattr(agents, "_WEB_TOOLS", None)
+
+    def missing(command, **kwargs):
+        return subprocess.CompletedProcess(command, 0, stdout="usage: agent\n", stderr="")
+
+    monkeypatch.setattr(agents.subprocess, "run", missing)
+    assert agents.cursor_agent_web_tools_available() is False
+    monkeypatch.setattr(agents, "_WEB_TOOLS", None)
+
+
+def test_planner_refuses_a_cli_without_web_search(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AMT_AGENT_BACKEND", "cursor")
+    monkeypatch.setattr("amt.agents.cursor_agent_web_tools_available", lambda: False)
+    brief = Brief.model_validate(
+        {"name": "toy", "run_id": "web", "budget": {"total_dbu": 1}, "candidate": {"id": "c00"}}
+    )
+    with pytest.raises(RuntimeError, match="web search"):
+        run_role("planner", brief, tmp_path, "web")
+
+
+def test_planner_call_logs_cited_references(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AMT_AGENT_BACKEND", "fake")
+    brief = Brief.model_validate(
+        {"name": "toy", "run_id": "cite", "budget": {"total_dbu": 1}, "candidate": {"id": "c00"}}
+    )
+    cited = _candidate("c00", "draft")
+    cited["references"] = ["https://arxiv.org/abs/2502.13138"]
+    _script(tmp_path, "cite", [{"role": "planner", "output": {"candidates": [cited]}}])
+    output = run_role("planner", brief, tmp_path, "cite")
+    assert output["candidates"][0]["references"] == ["https://arxiv.org/abs/2502.13138"]
+    record = json.loads(
+        (tmp_path / "runs" / "cite" / "agent_calls.jsonl").read_text(encoding="utf-8")
+    )
+    assert record["references_count"] == 1
+    assert record["role"] == "planner"
 
 
 def test_token_cap_and_call_log(tmp_path: Path, monkeypatch) -> None:

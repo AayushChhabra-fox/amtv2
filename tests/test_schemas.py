@@ -316,6 +316,7 @@ def test_candidate_schema_lists_plan_fields() -> None:
         "cheap_test",
         "kill_if",
         "est_cost",
+        "references",
     }
     assert set(schema["required"]) == {
         "id",
@@ -331,6 +332,18 @@ def test_candidate_schema_lists_plan_fields() -> None:
     assert "delta_vs_baseline" in ledger
     assert "mlflow_run_id" in ledger
     assert "job_run_id" in ledger
+
+
+def test_candidate_references_are_http_urls() -> None:
+    payload = dict(CANDIDATE)
+    payload["references"] = ["https://arxiv.org/abs/2502.13138"]
+    assert Candidate.model_validate(payload).references == ["https://arxiv.org/abs/2502.13138"]
+    payload["references"] = ["not a url"]
+    with pytest.raises(ValidationError, match="http"):
+        Candidate.model_validate(payload)
+    payload["references"] = [f"https://example.com/{index}" for index in range(6)]
+    with pytest.raises(ValidationError):
+        Candidate.model_validate(payload)
 
 
 def test_exported_json_schemas_match_models() -> None:
