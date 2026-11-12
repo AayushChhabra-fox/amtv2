@@ -64,3 +64,36 @@ def test_inflight_reservations_and_ledger_commitments() -> None:
     )
     assert node_committed_dbu([row], "r", "c1") == pytest.approx(3.5)
     assert node_committed_dbu([row], "r", "c2") == 0
+
+
+def test_later_rungs_are_priced_from_the_measured_job() -> None:
+    from pathlib import Path
+
+    from amt.orchestrator import _job_charge, _next_job_estimate
+    from amt.schemas import NodeWork, RunState
+
+    root = Path(__file__).resolve().parents[1]
+    brief = Brief.model_validate(
+        {"budget": {"total_dbu": 40}, "dataset_spec": "datasets/nfy_article_rerank_demo"}
+    )
+    node = NodeWork(node_id="c02", family="trees", claim="c", est_cost=5.0, rung="R1")
+    state = RunState(
+        run_id="r",
+        brief_path="b.yaml",
+        candidate_id="c02",
+        family="trees",
+        rung="R1",
+        seed=0,
+        batch="b",
+        nodes=[node],
+    )
+    assert _next_job_estimate(root, brief, state, node) == pytest.approx(5.0)
+
+    record = {"submitted_at": 0.0, "finished_at": 60.0, "dbu_est": 5.0}
+    state.submitted_jobs["c02/R1/0"] = record
+    node.rung = "R2"
+    measured = _job_charge(record)
+    assert measured == pytest.approx(estimate_dbu(1.0))
+    assert _next_job_estimate(root, brief, state, node) == pytest.approx(measured * 4.0)
+    node.rung = "R9"
+    assert _next_job_estimate(root, brief, state, node) == pytest.approx(5.0)

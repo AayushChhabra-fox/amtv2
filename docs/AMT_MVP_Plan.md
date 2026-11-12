@@ -392,7 +392,7 @@ R0 checks that the model imports, the loss decreases, the score shape is correct
   - **Promotion to confirm**: the top 3 at R3 whose Δ lower bound is above 0.
 
   The pruner writes `runs/<id>/rung_<r>_survivors.json` and appends ledger rows with reasons.
-- **Budget**, `amt/budget.py`: the DBU pool and per-candidate caps. Live spend is estimated as wall-clock × cluster DBU rate. It refuses any submission that would push the pool below zero.
+- **Budget**, `amt/budget.py`: the DBU pool and per-candidate caps. Live spend is estimated as wall-clock × cluster DBU rate. It refuses any submission that would push the pool below zero, or a candidate past its cap. The planner's `est_cost` prices a candidate's first job; later rungs are priced from that candidate's measured job, scaled by the train-fraction ratio between rungs.
 - **Status**, `amt/status.py`: a table of live nodes, spend versus pool, and kills with their reasons. `status.py --audit` confirms that every ledger row links to a job run, an MLflow run and a git SHA.
 - **Confirmation job**: retrains the top 3 with 3 seeds and scores them on `select_holdout`. Only the orchestrator can trigger it.
 - Done when:

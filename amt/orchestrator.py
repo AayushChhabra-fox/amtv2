@@ -47,7 +47,7 @@ from amt.schemas import (
     load_brief,
     parse_agent_output,
 )
-from amt.signoff import SignoffError, brief_key, search_block_reason
+from amt.signoff import SignoffError, _spec_path, brief_key, search_block_reason
 from amt.snapshot import SnapshotError, upload_candidate
 from amt.submit import (
     baselines_required,
@@ -55,6 +55,7 @@ from amt.submit import (
     missing_baseline_message,
     train_params,
 )
+from harness.data.contract import load_spec
 
 # Caps from section 3.4. A schema failure is returned once; the next one escalates.
 MAX_DEBUG_ATTEMPTS = 3
@@ -824,7 +825,7 @@ def _search_submit(state: RunState, brief: Brief, root: Path, backend: object) -
     key = _job_key(node)
     record = dict(state.submitted_jobs.get(key) or {})
     if not record.get("job_run_id"):
-        estimate = float(node.est_cost)
+        estimate = _next_job_estimate(root, brief, state, node)
         committed = node_committed_dbu(read_rows(root), state.run_id, node.node_id)
         try:
             assert_can_spend(
@@ -1274,6 +1275,28 @@ def _inflight_unfinished(state: RunState) -> int:
             continue
         count += 1
     return count
+
+
+def _next_job_estimate(root: Path, brief: Brief, state: RunState, node: NodeWork) -> float:
+    """The planner's est_cost prices a node's first job. A later rung scales the
+    measured charge of the node's last finished job by the train-fraction ratio."""
+
+    finished = [
+        (key, record)
+        for key, record in state.submitted_jobs.items()
+        if key.startswith(f"{node.node_id}/") and record.get("finished_at")
+    ]
+    if not finished:
+        return float(node.est_cost)
+    key, record = max(finished, key=lambda item: float(item[1]["finished_at"]))
+    try:
+        rungs = load_spec(_spec_path(root, brief)).sampling.rungs
+        ratio = float(rungs[node.rung].train_fraction) / float(
+            rungs[key.split("/")[1]].train_fraction
+        )
+    except (KeyError, OSError, ValueError, ZeroDivisionError):
+        return float(node.est_cost)
+    return _job_charge(record) * max(ratio, 1.0)
 
 
 def _job_charge(record: dict[str, Any]) -> float:
