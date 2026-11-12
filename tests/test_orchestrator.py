@@ -47,6 +47,7 @@ def test_resume_does_not_resubmit(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("AMT_STOP_AFTER")
     second = run_brief(brief, root=tmp_path)
     assert second.stage == "REPORT"
+    assert second.revisions == 0
     assert FakeJobs(tmp_path).submit_count() == 1
     assert (tmp_path / "candidates" / "c00" / "model.py").is_file()
     assert audit_rows(tmp_path, "toy") == []

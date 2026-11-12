@@ -22,6 +22,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dbu_est", required=True)
     parser.add_argument("--amt_run_id", required=True)
     parser.add_argument("--experiment_name", required=True)
+    parser.add_argument("--parent_id", default="")
+    parser.add_argument("--operator", default="draft")
+    parser.add_argument("--split", default="toy")
+    parser.add_argument("--node_id", default="")
     return parser.parse_args()
 
 
@@ -30,19 +34,23 @@ def main() -> None:
     mlflow.set_tracking_uri("databricks")
     mlflow.set_experiment(args.experiment_name)
     with mlflow.start_run() as active:
+        # Keys match amt.schemas.MLFLOW_TAG_KEYS. This file runs on serverless
+        # without the amt package, so the convention is inlined here.
+        node_id = args.node_id or args.candidate_id
         mlflow.set_tags(
             {
-                "candidate_id": args.candidate_id,
-                "family": args.family,
-                "rung": args.rung,
-                "batch": args.batch,
-                "git_sha": args.git_sha,
-                "dbu_est": args.dbu_est,
-                "seed": args.seed,
                 "run_id": args.amt_run_id,
-                "node_id": args.candidate_id,
-                "operator": "draft",
-                "split": "toy",
+                "node_id": node_id,
+                "parent_id": args.parent_id,
+                "family": args.family,
+                "operator": args.operator,
+                "rung": args.rung,
+                "seed": args.seed,
+                "batch": args.batch,
+                "split": args.split,
+                "git_sha": args.git_sha,
+                "candidate_id": args.candidate_id,
+                "dbu_est": args.dbu_est,
             }
         )
         mlflow.log_metric("ndcg_at_10", 0.5)

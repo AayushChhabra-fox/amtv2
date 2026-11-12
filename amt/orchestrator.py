@@ -7,8 +7,7 @@ import os
 import subprocess
 import time
 from pathlib import Path
-
-import yaml
+from typing import Any
 
 from amt.agents import run_role
 from amt.budget import BudgetExceeded, assert_can_spend
@@ -16,7 +15,7 @@ from amt.jobs_backend import make_backend
 from amt.ledger import append, read_rows
 from amt.preflight import smoke_candidate
 from amt.pruner import ledger_row
-from amt.schemas import Brief, RunState
+from amt.schemas import AgentRevision, Brief, RunState, load_brief, parse_agent_output
 
 
 def run_brief(
@@ -28,10 +27,10 @@ def run_brief(
     approval_mode: str | None = None,
 ) -> RunState:
     root = root or Path.cwd()
-    brief = _load_brief(brief_path)
+    brief = load_brief(brief_path)
     if approval_mode:
         brief.approval_mode = approval_mode  # type: ignore[assignment]
-    resolved_id = run_id or brief.run_id or brief.name
+    resolved_id = run_id or brief.run_id or brief.name or brief_path.stem
     state_path = root / "runs" / resolved_id / "state.json"
     if fresh and state_path.is_file():
         state_path.unlink()
@@ -60,10 +59,16 @@ def run_brief(
 def _step(state: RunState, brief: Brief, root: Path, backend: object) -> RunState:
     stage = state.stage
     if stage == "PLAN":
-        run_role("planner", brief, root, state.run_id)
+        output = run_role("planner", brief, root, state.run_id)
+        rejected = _reject_invalid_output(state, "planner", output, root)
+        if rejected is not None:
+            return rejected
         state.stage = "CRITIQUE"
     elif stage == "CRITIQUE":
-        run_role("critic", brief, root, state.run_id)
+        output = run_role("critic", brief, root, state.run_id)
+        rejected = _reject_invalid_output(state, "critic", output, root)
+        if rejected is not None:
+            return rejected
         state.stage = "IMPLEMENT"
     elif stage == "IMPLEMENT":
         run_role("implementer", brief, root, state.run_id)
@@ -88,13 +93,53 @@ def _step(state: RunState, brief: Brief, root: Path, backend: object) -> RunStat
     return state
 
 
+def apply_agent_output(
+    state: RunState, role: str, payload: Any
+) -> tuple[RunState, AgentRevision | None]:
+    """Validate role output. A failure is one revision to hand back to the agent."""
+    parsed = parse_agent_output(role, payload)
+    if parsed.revision is None:
+        return state, None
+    updated = state.model_copy(
+        update={"revisions": state.revisions + parsed.revision.revision_count}
+    )
+    return updated, parsed.revision
+
+
+def _structured_role_output(role: str, output: Any) -> bool:
+    if role not in {"planner", "critic"} or not isinstance(output, dict):
+        return False
+    if role == "planner":
+        return "candidates" in output or "proposals" in output
+    return "verdicts" in output or "decision" in output
+
+
+def _reject_invalid_output(state: RunState, role: str, output: Any, root: Path) -> RunState | None:
+    if not _structured_role_output(role, output):
+        return None
+    state, revision = apply_agent_output(state, role, output)
+    if revision is None:
+        return None
+    _write_feedback(root, state, revision)
+    state.stage = "ESCALATE"
+    _write_escalate(root, state, revision.message)
+    return state
+
+
+def _write_feedback(root: Path, state: RunState, revision: AgentRevision) -> None:
+    path = root / "runs" / state.run_id / "agent_feedback.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(revision.message)
+
+
 def _submit(state: RunState, brief: Brief, root: Path, backend: object) -> bool:
     key = f"{state.candidate_id}/{state.rung}/{state.seed}"
     record = dict(state.submitted_jobs.get(key) or {})
     if record.get("job_run_id"):
         state.submitted_jobs[key] = record
         return True
-    estimate = float(brief.candidate.get("est_dbu", 0.1))
+    pinned = brief.candidate
+    estimate = float(pinned.est_dbu if pinned else 0.1)
     try:
         assert_can_spend(brief, state.spent_dbu, estimate)
     except BudgetExceeded as exc:
@@ -147,7 +192,7 @@ def _prune(state: RunState, brief: Brief, root: Path, backend: object) -> None:
         wall_min = round((record["finished_at"] - record["submitted_at"]) / 60, 3)
     if not record.get("pruned"):
         if not _ledger_has(root, state):
-            claim = str(brief.candidate.get("claim", "logistic regression"))
+            claim = brief.candidate.claim if brief.candidate else "logistic regression"
             append(
                 root,
                 ledger_row(
@@ -181,23 +226,22 @@ def _ledger_has(root: Path, state: RunState) -> bool:
     )
 
 
-def _load_brief(path: Path) -> Brief:
-    payload = yaml.safe_load(path.read_text())
-    return Brief.model_validate(payload)
-
-
 def _new_state(brief: Brief, run_id: str, brief_path: Path, root: Path) -> RunState:
-    candidate = brief.candidate or {}
+    pinned = brief.candidate
     return RunState(
         run_id=run_id,
         brief_path=str(brief_path),
         stage="PLAN",
+        round=0,
+        live_nodes=[] if pinned is None else [pinned.id],
         approval_mode=brief.approval_mode,
-        candidate_id=str(candidate.get("id", "c00")),
-        family=str(candidate.get("family", "linear")),
-        rung=str(candidate.get("rung", "R0")),
-        seed=int(candidate.get("seed", 0)),
-        batch=str(candidate.get("batch", "toy")),
+        k=brief.k,
+        budget_dbu=brief.budget.total_dbu,
+        candidate_id=pinned.id if pinned else "c00",
+        family=pinned.family if pinned else "linear",
+        rung=pinned.rung if pinned else "R0",
+        seed=pinned.seed if pinned else 0,
+        batch=pinned.batch if pinned else "toy",
         git_sha=_git_sha(root),
     )
 

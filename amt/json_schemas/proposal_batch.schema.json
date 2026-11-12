@@ -1,0 +1,123 @@
+{
+  "$defs": {
+    "Candidate": {
+      "additionalProperties": false,
+      "description": "Planner proposal for one node.",
+      "properties": {
+        "id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "parent_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Set for improve, debug, ablate, and combine. Omit on a draft.",
+          "title": "Parent Id"
+        },
+        "operator": {
+          "enum": [
+            "draft",
+            "improve",
+            "debug",
+            "ablate",
+            "combine"
+          ],
+          "title": "Operator",
+          "type": "string"
+        },
+        "kind": {
+          "default": "model",
+          "enum": [
+            "model",
+            "baseline"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "family": {
+          "minLength": 1,
+          "title": "Family",
+          "type": "string"
+        },
+        "claim": {
+          "minLength": 1,
+          "title": "Claim",
+          "type": "string"
+        },
+        "fit_argument": {
+          "minLength": 1,
+          "title": "Fit Argument",
+          "type": "string"
+        },
+        "change": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The one atomic change. Required for improve.",
+          "title": "Change"
+        },
+        "cheap_test": {
+          "minLength": 1,
+          "title": "Cheap Test",
+          "type": "string"
+        },
+        "kill_if": {
+          "minLength": 1,
+          "title": "Kill If",
+          "type": "string"
+        },
+        "est_cost": {
+          "description": "Estimated DBU for the next rung.",
+          "minimum": 0,
+          "title": "Est Cost",
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "operator",
+        "family",
+        "claim",
+        "fit_argument",
+        "cheap_test",
+        "kill_if",
+        "est_cost"
+      ],
+      "title": "Candidate",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Planner output: one or more candidates.",
+  "properties": {
+    "candidates": {
+      "items": {
+        "$ref": "#/$defs/Candidate"
+      },
+      "minItems": 1,
+      "title": "Candidates",
+      "type": "array"
+    }
+  },
+  "required": [
+    "candidates"
+  ],
+  "title": "ProposalBatch",
+  "type": "object"
+}

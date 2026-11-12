@@ -10,12 +10,10 @@ class BudgetExceeded(RuntimeError):
 
 
 def pool_dbu(brief: Brief) -> float:
-    return float(brief.budget.get("total_dbu", 0))
+    return float(brief.budget.total_dbu)
 
 
 def assert_can_spend(brief: Brief, spent_dbu: float, next_dbu: float) -> None:
     pool = pool_dbu(brief)
     if spent_dbu + next_dbu > pool:
-        raise BudgetExceeded(
-            f"refusing submit: spent {spent_dbu} + {next_dbu} exceeds pool {pool}"
-        )
+        raise BudgetExceeded(f"refusing submit: spent {spent_dbu} + {next_dbu} exceeds pool {pool}")

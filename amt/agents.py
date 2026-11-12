@@ -27,8 +27,10 @@ import subprocess
 import time
 from pathlib import Path
 
+import yaml
+
 from amt.context import build_context
-from amt.schemas import Brief, Candidate, Verdict
+from amt.schemas import Brief, BriefCandidate, Candidate, Verdict
 
 MODEL_PY = '''\
 """Logistic regression ranker for the Phase 0 toy candidate."""
@@ -221,29 +223,26 @@ def _set_active_role(root: Path, role: str | None) -> None:
 
 
 def _run_stub(role: str, brief: Brief, root: Path, run_id: str) -> dict:
-    candidate = brief.candidate or {}
-    candidate_id = str(candidate.get("id", "c00"))
+    spec = brief.candidate or BriefCandidate()
     if role == "planner":
         proposal = Candidate(
-            id=candidate_id,
-            family=str(candidate.get("family", "linear")),
-            claim=str(candidate.get("claim", "logistic regression")),
+            id=spec.id,
+            family=spec.family,
+            claim=spec.claim,
             operator="draft",
-            est_cost=float(candidate.get("est_dbu", 0.1)),
+            kind="model",
+            fit_argument="Separable toy features are linearly classifiable.",
+            cheap_test="Smoke loss decreases on the toy frame.",
+            kill_if="Smoke scores are non-finite or the loss does not fall.",
+            est_cost=spec.est_dbu,
         )
         path = root / "runs" / run_id / "proposals.yaml"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            "candidates:\n"
-            f"  - id: {proposal.id}\n"
-            f"    family: {proposal.family}\n"
-            f"    operator: {proposal.operator}\n"
-            f"    claim: {proposal.claim}\n"
-        )
-        return {"proposals": [proposal.model_dump()]}
+        path.write_text(yaml.safe_dump({"candidates": [proposal.model_dump()]}, sort_keys=False))
+        return {"candidates": [proposal.model_dump()]}
     if role == "critic":
         verdict = Verdict(
-            candidate_id=candidate_id,
+            candidate_id=spec.id,
             decision="PASS",
             reason="Toy skeleton accepts the single logistic proposal.",
         )
@@ -254,21 +253,21 @@ def _run_stub(role: str, brief: Brief, root: Path, run_id: str) -> dict:
     if role == "implementer":
         _set_active_role(root, "implementer")
         try:
-            _write_candidate(root, candidate_id, candidate)
+            _write_candidate(root, spec.id, spec)
         finally:
             _set_active_role(root, None)
-        return {"wrote": f"candidates/{candidate_id}/model.py"}
+        return {"wrote": f"candidates/{spec.id}/model.py"}
     raise ValueError(f"unknown role {role}")
 
 
-def _write_candidate(root: Path, candidate_id: str, candidate: dict) -> None:
+def _write_candidate(root: Path, candidate_id: str, candidate: BriefCandidate) -> None:
     directory = root / "candidates" / candidate_id
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "model.py").write_text(MODEL_PY)
     (directory / "candidate.yaml").write_text(
         f"id: {candidate_id}\n"
-        f"family: {candidate.get('family', 'linear')}\n"
-        f"claim: {candidate.get('claim', 'logistic regression')}\n"
+        f"family: {candidate.family}\n"
+        f"claim: {candidate.claim}\n"
         "operator: draft\n"
     )
     (directory / "spec.md").write_text(

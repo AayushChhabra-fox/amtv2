@@ -1,0 +1,138 @@
+{
+  "additionalProperties": false,
+  "description": "Resumable loop state. Settings are K, budget, and approval_mode.",
+  "properties": {
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "brief_path": {
+      "title": "Brief Path",
+      "type": "string"
+    },
+    "stage": {
+      "default": "PLAN",
+      "enum": [
+        "PLAN",
+        "CRITIQUE",
+        "SPEC",
+        "IMPLEMENT",
+        "PREFLIGHT",
+        "SMOKE",
+        "DEBUG",
+        "SUBMIT",
+        "WAIT",
+        "PRUNE",
+        "CONFIRM",
+        "REPORT",
+        "ESCALATE"
+      ],
+      "title": "Stage",
+      "type": "string"
+    },
+    "round": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Round",
+      "type": "integer"
+    },
+    "live_nodes": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Live Nodes",
+      "type": "array"
+    },
+    "submitted_jobs": {
+      "additionalProperties": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Submitted Jobs",
+      "type": "object"
+    },
+    "spent_dbu": {
+      "default": 0.0,
+      "minimum": 0,
+      "title": "Spent Dbu",
+      "type": "number"
+    },
+    "k": {
+      "default": 4,
+      "minimum": 1,
+      "title": "K",
+      "type": "integer"
+    },
+    "budget_dbu": {
+      "default": 0.0,
+      "minimum": 0,
+      "title": "Budget Dbu",
+      "type": "number"
+    },
+    "approval_mode": {
+      "default": "none",
+      "enum": [
+        "none",
+        "every_stage",
+        "round_shortlist"
+      ],
+      "title": "Approval Mode",
+      "type": "string"
+    },
+    "revisions": {
+      "default": 0,
+      "description": "Agent revisions already spent.",
+      "minimum": 0,
+      "title": "Revisions",
+      "type": "integer"
+    },
+    "candidate_id": {
+      "title": "Candidate Id",
+      "type": "string"
+    },
+    "family": {
+      "title": "Family",
+      "type": "string"
+    },
+    "rung": {
+      "enum": [
+        "R0",
+        "R1",
+        "R2",
+        "R3"
+      ],
+      "title": "Rung",
+      "type": "string"
+    },
+    "seed": {
+      "minimum": 0,
+      "title": "Seed",
+      "type": "integer"
+    },
+    "batch": {
+      "title": "Batch",
+      "type": "string"
+    },
+    "git_sha": {
+      "default": "unknown",
+      "title": "Git Sha",
+      "type": "string"
+    },
+    "stop_requested": {
+      "default": false,
+      "title": "Stop Requested",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "run_id",
+    "brief_path",
+    "candidate_id",
+    "family",
+    "rung",
+    "seed",
+    "batch"
+  ],
+  "title": "RunState",
+  "type": "object"
+}

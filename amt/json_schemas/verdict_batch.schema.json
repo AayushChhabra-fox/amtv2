@@ -1,0 +1,53 @@
+{
+  "$defs": {
+    "Verdict": {
+      "additionalProperties": false,
+      "description": "Critic decision for one candidate.",
+      "properties": {
+        "candidate_id": {
+          "minLength": 1,
+          "title": "Candidate Id",
+          "type": "string"
+        },
+        "decision": {
+          "enum": [
+            "PASS",
+            "REVISE",
+            "DROP"
+          ],
+          "title": "Decision",
+          "type": "string"
+        },
+        "reason": {
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "candidate_id",
+        "decision",
+        "reason"
+      ],
+      "title": "Verdict",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Critic output: one verdict per candidate.",
+  "properties": {
+    "verdicts": {
+      "items": {
+        "$ref": "#/$defs/Verdict"
+      },
+      "minItems": 1,
+      "title": "Verdicts",
+      "type": "array"
+    }
+  },
+  "required": [
+    "verdicts"
+  ],
+  "title": "VerdictBatch",
+  "type": "object"
+}

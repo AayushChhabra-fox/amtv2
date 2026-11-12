@@ -1,0 +1,232 @@
+{
+  "$defs": {
+    "DeltaVsBaseline": {
+      "additionalProperties": false,
+      "description": "Paired difference against the same-rung baseline.",
+      "properties": {
+        "point": {
+          "title": "Point",
+          "type": "number"
+        },
+        "ci_lo": {
+          "title": "Ci Lo",
+          "type": "number"
+        },
+        "ci_hi": {
+          "title": "Ci Hi",
+          "type": "number"
+        }
+      },
+      "required": [
+        "point",
+        "ci_lo",
+        "ci_hi"
+      ],
+      "title": "DeltaVsBaseline",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One append-only result. Measurements stay null until a rung finishes.",
+  "properties": {
+    "run_id": {
+      "minLength": 1,
+      "title": "Run Id",
+      "type": "string"
+    },
+    "node_id": {
+      "minLength": 1,
+      "title": "Node Id",
+      "type": "string"
+    },
+    "parent_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Id"
+    },
+    "round": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Round",
+      "type": "integer"
+    },
+    "operator": {
+      "enum": [
+        "draft",
+        "improve",
+        "debug",
+        "ablate",
+        "combine"
+      ],
+      "title": "Operator",
+      "type": "string"
+    },
+    "kind": {
+      "default": "model",
+      "enum": [
+        "model",
+        "baseline"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "family": {
+      "minLength": 1,
+      "title": "Family",
+      "type": "string"
+    },
+    "claim": {
+      "minLength": 1,
+      "title": "Claim",
+      "type": "string"
+    },
+    "rung": {
+      "enum": [
+        "R0",
+        "R1",
+        "R2",
+        "R3"
+      ],
+      "title": "Rung",
+      "type": "string"
+    },
+    "seed": {
+      "minimum": 0,
+      "title": "Seed",
+      "type": "integer"
+    },
+    "metric": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Metric"
+    },
+    "delta_vs_baseline": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DeltaVsBaseline"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "dbu": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Dbu"
+    },
+    "wall_min": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Wall Min"
+    },
+    "latency_p95_ms": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Latency P95 Ms"
+    },
+    "status": {
+      "enum": [
+        "kept",
+        "killed",
+        "failed",
+        "promoted"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "kill_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Kill Reason"
+    },
+    "git_sha": {
+      "minLength": 1,
+      "title": "Git Sha",
+      "type": "string"
+    },
+    "mlflow_run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Mlflow Run Id"
+    },
+    "job_run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Job Run Id"
+    }
+  },
+  "required": [
+    "run_id",
+    "node_id",
+    "operator",
+    "family",
+    "claim",
+    "rung",
+    "seed",
+    "status",
+    "git_sha"
+  ],
+  "title": "LedgerRow",
+  "type": "object"
+}

@@ -1,0 +1,32 @@
+{
+  "additionalProperties": false,
+  "description": "Critic decision for one candidate.",
+  "properties": {
+    "candidate_id": {
+      "minLength": 1,
+      "title": "Candidate Id",
+      "type": "string"
+    },
+    "decision": {
+      "enum": [
+        "PASS",
+        "REVISE",
+        "DROP"
+      ],
+      "title": "Decision",
+      "type": "string"
+    },
+    "reason": {
+      "minLength": 1,
+      "title": "Reason",
+      "type": "string"
+    }
+  },
+  "required": [
+    "candidate_id",
+    "decision",
+    "reason"
+  ],
+  "title": "Verdict",
+  "type": "object"
+}

@@ -1,11 +1,13 @@
-"""Pruner stub for the walking skeleton.
+"""Pruner entry point.
 
-The deterministic rules from the plan (section 5.3) are Phase 1. This stub
-only checks that a same-rung MLflow metric exists. It never receives holdout
-frames or holdout metric names.
+Section 5.3 rules are the control-layer milestone. This job entry only
+reports whether a metric exists, and it never reads holdout frames.
 """
 
 from __future__ import annotations
+
+import argparse
+import json
 
 from amt.schemas import LedgerRow
 
@@ -50,3 +52,27 @@ def ledger_row(
         mlflow_run_id=mlflow_run_id,
         job_run_id=job_run_id,
     )
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Prune one rung from logged metrics")
+    parser.add_argument("--run-id", default="")
+    parser.add_argument("--rung", default="R0")
+    parser.add_argument("--metric", default="")
+    args = parser.parse_args(argv)
+    metric = float(args.metric) if args.metric else None
+    status, reason = decide(metric)
+    print(
+        json.dumps(
+            {
+                "run_id": args.run_id,
+                "rung": args.rung,
+                "status": status,
+                "kill_reason": reason,
+            }
+        )
+    )
+
+
+if __name__ == "__main__":
+    main()

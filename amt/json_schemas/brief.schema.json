@@ -1,0 +1,539 @@
+{
+  "$defs": {
+    "BriefCandidate": {
+      "additionalProperties": false,
+      "description": "Single node pinned by a walking-skeleton brief. Search briefs omit this.",
+      "properties": {
+        "id": {
+          "default": "c00",
+          "title": "Id",
+          "type": "string"
+        },
+        "family": {
+          "default": "linear",
+          "title": "Family",
+          "type": "string"
+        },
+        "rung": {
+          "default": "R0",
+          "enum": [
+            "R0",
+            "R1",
+            "R2",
+            "R3"
+          ],
+          "title": "Rung",
+          "type": "string"
+        },
+        "seed": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Seed",
+          "type": "integer"
+        },
+        "batch": {
+          "default": "toy",
+          "title": "Batch",
+          "type": "string"
+        },
+        "claim": {
+          "default": "logistic regression",
+          "title": "Claim",
+          "type": "string"
+        },
+        "est_dbu": {
+          "default": 0.1,
+          "minimum": 0,
+          "title": "Est Dbu",
+          "type": "number"
+        }
+      },
+      "title": "BriefCandidate",
+      "type": "object"
+    },
+    "Budget": {
+      "additionalProperties": false,
+      "description": "DBU pool for one brief.",
+      "properties": {
+        "total_dbu": {
+          "minimum": 0,
+          "title": "Total Dbu",
+          "type": "number"
+        },
+        "max_concurrent_jobs": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Concurrent Jobs"
+        }
+      },
+      "required": [
+        "total_dbu"
+      ],
+      "title": "Budget",
+      "type": "object"
+    },
+    "DesignSpace": {
+      "additionalProperties": false,
+      "description": "Families the planner may draft from.",
+      "properties": {
+        "families": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Families",
+          "type": "array"
+        },
+        "out_of_scope_for_mvp": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Out Of Scope For Mvp",
+          "type": "array"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Data"
+        }
+      },
+      "title": "DesignSpace",
+      "type": "object"
+    },
+    "Efficiency": {
+      "additionalProperties": false,
+      "description": "Placeholders until gate G1 replaces them.",
+      "properties": {
+        "train_dbu_per_candidate": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Train Dbu Per Candidate"
+        },
+        "wall_clock_per_rung": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Wall Clock Per Rung",
+          "type": "object"
+        },
+        "serving": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ServingLimit"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "Efficiency",
+      "type": "object"
+    },
+    "EvalBlock": {
+      "additionalProperties": false,
+      "description": "Where the brief says scores come from. Splits live in the dataset spec.",
+      "properties": {
+        "split": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Split"
+        },
+        "final_holdout": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Final Holdout"
+        }
+      },
+      "title": "EvalBlock",
+      "type": "object"
+    },
+    "MetricSpec": {
+      "additionalProperties": false,
+      "description": "Primary metric the brief asks the loop to move.",
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "gains": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gains"
+        },
+        "why_it_tracks_outcome": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Why It Tracks Outcome"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "MetricSpec",
+      "type": "object"
+    },
+    "Problem": {
+      "additionalProperties": false,
+      "description": "Human-readable problem statement. ``dataset_spec`` may live here.",
+      "properties": {
+        "surface": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Surface"
+        },
+        "user_outcome": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "User Outcome"
+        },
+        "metric": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetricSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "dataset_spec": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dataset Spec"
+        },
+        "data": {
+          "additionalProperties": true,
+          "title": "Data",
+          "type": "object"
+        }
+      },
+      "title": "Problem",
+      "type": "object"
+    },
+    "Reference": {
+      "additionalProperties": true,
+      "description": "Production reference. Extra keys hold measured ranges and notes.",
+      "properties": {
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
+        }
+      },
+      "title": "Reference",
+      "type": "object"
+    },
+    "ServingLimit": {
+      "additionalProperties": false,
+      "description": "Serving budget recorded on the brief. The harness enforces it later.",
+      "properties": {
+        "latency_p95_ms_per_100_candidates": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Latency P95 Ms Per 100 Candidates"
+        },
+        "cost": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cost"
+        }
+      },
+      "title": "ServingLimit",
+      "type": "object"
+    },
+    "TaskBlock": {
+      "additionalProperties": false,
+      "description": "Task definition the critic checks proposals against.",
+      "properties": {
+        "query_unit": {
+          "default": "",
+          "title": "Query Unit",
+          "type": "string"
+        },
+        "candidates": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Candidates"
+        },
+        "include_query_if": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Include Query If"
+        },
+        "serve_time_inputs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Serve Time Inputs",
+          "type": "array"
+        },
+        "forbidden": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Forbidden",
+          "type": "array"
+        }
+      },
+      "title": "TaskBlock",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One search brief. ``task`` and ``dataset_spec`` are the contract.",
+  "properties": {
+    "name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Name"
+    },
+    "run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Run Id"
+    },
+    "approval_mode": {
+      "default": "none",
+      "enum": [
+        "none",
+        "every_stage",
+        "round_shortlist"
+      ],
+      "title": "Approval Mode",
+      "type": "string"
+    },
+    "dataset_spec": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Path of the dataset spec folder, for example datasets/nfy_article_rerank.",
+      "title": "Dataset Spec"
+    },
+    "problem": {
+      "$ref": "#/$defs/Problem"
+    },
+    "task": {
+      "$ref": "#/$defs/TaskBlock"
+    },
+    "reference": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Reference"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "min_effect": {
+      "default": 0.01,
+      "title": "Min Effect",
+      "type": "number"
+    },
+    "efficiency": {
+      "$ref": "#/$defs/Efficiency"
+    },
+    "eval": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EvalBlock"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "budget": {
+      "$ref": "#/$defs/Budget"
+    },
+    "k": {
+      "default": 4,
+      "description": "Nodes kept per round.",
+      "minimum": 1,
+      "title": "K",
+      "type": "integer"
+    },
+    "mode": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Mode"
+    },
+    "design_space": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DesignSpace"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "off_limits": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Off Limits",
+      "type": "array"
+    },
+    "candidate": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BriefCandidate"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "budget"
+  ],
+  "title": "Brief",
+  "type": "object"
+}
