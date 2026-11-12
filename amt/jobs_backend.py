@@ -51,6 +51,24 @@ def _check_params(job: str, params: dict) -> None:
         raise ValueError(f"{job} does not declare parameters {extra}")
 
 
+_TRANSIENT = (
+    "no such host",
+    "connection refused",
+    "connection reset",
+    "i/o timeout",
+    "tls handshake timeout",
+    "temporarily_unavailable",
+    "502 bad gateway",
+    "503 service unavailable",
+    "504 gateway timeout",
+)
+
+
+def _transient(detail: str) -> bool:
+    lowered = detail.lower()
+    return any(text in lowered for text in _TRANSIENT)
+
+
 def _run_json(args: list[str], *, cwd: Path) -> dict:
     completed = subprocess.run(
         args,
@@ -258,15 +276,21 @@ class DatabricksJobs:
         deadline = time.time() + timeout_s
         terminal = {"TERMINATED", "SKIPPED", "INTERNAL_ERROR"}
         while time.time() < deadline:
-            response = _run_json(
-                [
-                    databricks_bin(),
-                    "api",
-                    "get",
-                    f"/api/2.1/jobs/runs/get?run_id={job_run_id}",
-                ],
-                cwd=self.root,
-            )
+            try:
+                response = _run_json(
+                    [
+                        databricks_bin(),
+                        "api",
+                        "get",
+                        f"/api/2.1/jobs/runs/get?run_id={job_run_id}",
+                    ],
+                    cwd=self.root,
+                )
+            except RuntimeError as exc:
+                if not _transient(str(exc)):
+                    raise
+                time.sleep(30)
+                continue
             state = response.get("state") or {}
             life = state.get("life_cycle_state")
             if life in terminal:

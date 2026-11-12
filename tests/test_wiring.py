@@ -346,6 +346,36 @@ def test_unsupported_families_need_every_newest_cell_unsupported() -> None:
     assert _unsupported_families(_newest(missing, scored=False)) == {}
 
 
+def test_wait_rides_out_a_dns_blip(tmp_path: Path, monkeypatch) -> None:
+    import amt.jobs_backend as jb
+
+    replies = iter(
+        [
+            RuntimeError('Error: Get "https://x/api": dial tcp: lookup x: no such host'),
+            {"state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"}},
+        ]
+    )
+
+    def fake_run_json(_args, *, cwd):
+        reply = next(replies)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    monkeypatch.setattr(jb, "_run_json", fake_run_json)
+    monkeypatch.setattr(jb.time, "sleep", lambda _s: None)
+    backend = jb.DatabricksJobs.__new__(jb.DatabricksJobs)
+    backend.root = tmp_path
+    assert backend.wait("1", timeout_s=60)["result_state"] == "SUCCESS"
+
+    def missing(_args, *, cwd):
+        raise RuntimeError("Error: run 1 does not exist")
+
+    monkeypatch.setattr(jb, "_run_json", missing)
+    with pytest.raises(RuntimeError, match="does not exist"):
+        backend.wait("1", timeout_s=60)
+
+
 def test_long_idempotency_tokens_are_shortened_stably() -> None:
     from amt.jobs_backend import _api_token
 
