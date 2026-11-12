@@ -1,0 +1,46 @@
+name: nfy_demo
+run_id: nfy-demo
+approval_mode: none
+scale: search
+dataset_spec: datasets/nfy_article_rerank_demo
+k: 2
+max_rounds: 2
+problem:
+  surface: News For You article reranker, demo window
+  user_outcome: Readers find articles they finish, not only articles they tap.
+  metric:
+    name: ndcg@10_graded
+    gains: {impressed: 0, click: 1, engaged_read: 2, deep_read: 3}
+    why_it_tracks_outcome: Graded NDCG@10 rewards reads over bounces in the first screen.
+task:
+  query_unit: one nfy_reco_requests row with entity_type article
+  candidates: served candidates impressed on for-you within 30 minutes
+  include_query_if: at least one click
+  serve_time_inputs:
+    - request context
+    - user profile at request time
+    - production signals and total_score
+    - article attributes
+    - popularity computed before request_ts
+  forbidden:
+    - item_index
+    - display position
+    - anything timestamped after request_ts
+min_effect: 0.01
+efficiency:
+  train_dbu_per_candidate: 5
+  serving:
+    latency_p95_ms_per_100_candidates: 20
+budget:
+  total_dbu: 40
+  max_concurrent_jobs: 2
+mode: both
+design_space:
+  families:
+    - learned reweighting of production signals
+    - gradient-boosted rankers
+  data: existing sources only
+off_limits:
+  - eval and holdout splits
+  - metric code
+  - harness
