@@ -1,6 +1,8 @@
 -- Graded label: 0 impressed, 1 click or bounce, 2 engaged_read, 3 deep_read.
 -- read_quality counts only with a click outcome. The event must fall inside 24h.
 -- label_event_ts is what the builder checks against label_window.
+-- news_interactions records no surface (page_type is always 'dynamic'), so a read of the
+-- item by the same xid within 24h of the For You impression is credited to it.
 WITH impressed AS (
   SELECT
     c.request_id AS query_id,
@@ -40,7 +42,6 @@ interacted AS (
   LEFT JOIN {interactions} AS ix
     ON ix.xid = imp.xid
    AND ix.entity_id = imp.item_id
-   AND ix.page_type = 'for-you'
    AND ix.event_created >= imp.query_ts
    AND ix.event_created < imp.query_ts + INTERVAL 24 HOURS
    AND ix.read_quality IN ('bounce', 'engaged_read', 'deep_read')

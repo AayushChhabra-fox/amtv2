@@ -29,7 +29,6 @@ WITH impressed AS (
   LEFT JOIN {interactions} AS ix
     ON ix.xid = c.xid
    AND ix.entity_id = c.entity_id
-   AND ix.page_type = 'for-you'
    AND ix.event_created >= c.request_ts
    AND ix.event_created < c.request_ts + INTERVAL 24 HOURS
    AND ix.read_quality IN ('bounce', 'engaged_read', 'deep_read')
