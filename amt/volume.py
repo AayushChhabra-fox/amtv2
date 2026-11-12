@@ -22,6 +22,16 @@ def cli_uri(path: str) -> str:
 
 
 def put(root: Path, local: Path, remote: str, *, overwrite: bool = False) -> None:
+    parent = str(PurePosixPath(remote.removeprefix("dbfs:")).parent)
+    made = subprocess.run(
+        [databricks_bin(), "fs", "mkdir", cli_uri(parent)],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if made.returncode != 0:
+        raise VolumeError(f"creating {parent} failed: {_detail(made)}")
     args = [databricks_bin(), "fs", "cp", str(local), cli_uri(remote)]
     if overwrite:
         args.append("--overwrite")

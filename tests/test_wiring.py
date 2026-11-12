@@ -176,6 +176,7 @@ def test_volume_calls_use_dbfs_uris(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(amt.volume.subprocess, "run", fake_run)
     base = "/Volumes/c/s/v"
     amt.volume.put(tmp_path, tmp_path / "m.json", f"{base}/matrices/m.json", overwrite=True)
+    assert calls[-2][2:] == ["mkdir", f"dbfs:{base}/matrices"]
     assert calls[-1][2:] == ["cp", str(tmp_path / "m.json"), f"dbfs:{base}/matrices/m.json",
                              "--overwrite"]
     assert scores_exist(f"{base}/R1/seed=0.parquet", tmp_path)
