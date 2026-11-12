@@ -1,38 +1,125 @@
-# Phase 0 record of the confirmed NFY sources. The executable spec (SQL
-# fragments, splits, sampling) is Phase 1 M2.
+# Executable NFY article rerank spec. Phase 0 measurements that fixed these
+# choices live in docs/phase0_profile.json: impression dedupe is
+# latest_impression_rn = 1, profiles join on user_profile_key +
+# profile_content_hash, and the label window is 24h because dwell is
+# time-on-page. news_interactions.event_created places the grade inside
+# that window. context_embedding_3072 is the article vector on
+# product_api_prod.news_for_you.news_candidates_feature; it is not a
+# feature here because the column is a current snapshot.
 name: nfy_article_rerank
 task_type: ranking
-sources:
-  requests: pnr_prod.silver.nfy_reco_requests
-  candidates: pnr_prod.silver.nfy_reco_candidates
-  impressions: pnr_prod.silver.news_impressions
-  interactions: pnr_prod.silver.news_interactions
-  profiles: pnr_prod.silver.nfy_user_profile_versions
-  articles: pnr_prod.bronze.news_article_feature
-profile_join:
-  # 120/120 article requests sampled on 2026-11-10 matched a profile version.
-  # The join did not fan out, so each (user_profile_key, profile_content_hash)
-  # hit one version row in this sample.
-  keys: [user_profile_key, profile_content_hash]
-  sample: 120/120 on 2026-11-10
-embeddings:
-  # Article vectors, one row per article. Join candidates and interactions on
-  # entity_id. pnr_prod.bronze.news_article_feature calls that same article key id.
-  # news_interactions.context_embedding_3072 repeats the column name; this table
-  # is the source. 30251/30251 rows have the vector. 293/300 interaction
-  # entity_ids on 2026-11-10 matched.
-  table: product_api_prod.news_for_you.news_candidates_feature
-  column: context_embedding_3072
-  join: entity_id
-  thumbnail: emb_thumbnail_3072
-impressions:
-  # 4000-row sample: 3990 already latest_impression_rn=1, 9 at 2, 1 at 3.
-  dedupe: latest_impression_rn = 1
-labels:
-  # news_interactions has event_date and dwell_time_seconds, and no event
-  # timestamp. dwell_time_seconds is time-on-page, not delay after the request.
-  # The label cannot be placed more finely than the calendar day, so the window
-  # stays 24h.
-  label_window: 24h
-  label_window_status: date_grain
+entity_type: article
 primary_metric: ndcg@10_graded
+
+output:
+  catalog: product_api_dev
+  schema: amt
+
+sources:
+  requests:
+    table: pnr_prod.silver.nfy_reco_requests
+    date_col: event_date
+    partition_filter: "{date_col} BETWEEN DATE '{start}' AND DATE '{end}'"
+  candidates:
+    table: pnr_prod.silver.nfy_reco_candidates
+    date_col: event_date
+    partition_filter: "{date_col} BETWEEN DATE '{start}' AND DATE '{end}'"
+  impressions:
+    table: pnr_prod.silver.news_impressions
+    date_col: make_date(year, month, day)
+    partition_filter: "{date_col} BETWEEN DATE '{start}' AND DATE '{end}'"
+  interactions:
+    table: pnr_prod.silver.news_interactions
+    date_col: event_date
+    partition_filter: "{date_col} BETWEEN DATE '{start}' AND DATE '{end}'"
+  profiles:
+    table: pnr_prod.silver.nfy_user_profile_versions
+    unpartitioned: true
+  articles:
+    table: pnr_prod.bronze.news_article_feature
+    unpartitioned: true
+  article_features:
+    table: product_api_prod.news_for_you.news_candidates_feature
+    unpartitioned: true
+
+queries: queries.sql
+candidates: candidates.sql
+labels:
+  sql: labels.sql
+  label_window: 24h
+  aux_labels: [click]
+
+feature_groups:
+  profile:
+    sql: features/profile.sql
+    keys: [query_id]
+    available_at: profile_version_ts
+  prod_signals:
+    sql: features/prod_signals.sql
+    keys: [query_id, item_id]
+    available_at: query_ts
+  article:
+    sql: features/article.sql
+    keys: [item_id]
+    available_at: published_ts
+  context:
+    sql: features/context.sql
+    keys: [query_id]
+    available_at: query_ts
+  popularity:
+    sql: features/popularity.sql
+    keys: [query_id, item_id]
+    available_at: popularity_window_end
+    lookback_days: 7
+
+reference_scores:
+  production: total_score
+  recency: "-item_age_seconds"
+
+filters:
+  include_query_if: "max(label) >= 1"
+
+forbidden_columns:
+  - item_index
+  - display_position
+  - latest_profile_*
+
+candidate_bounds:
+  min: 1
+  max: 100
+
+split:
+  time_col: query_ts
+  gap_days: 1
+  train: 2026-09-14..2026-10-18
+  search_val: 2026-10-20..2026-10-26
+  select_holdout: 2026-10-28..2026-11-02
+  final_holdout: 2026-11-04..2026-11-10
+
+sampling:
+  seed: 0
+  smoke:
+    train_queries: 2000
+    eval_queries: 1000
+  rungs:
+    R1:
+      train_fraction: 0.10
+      eval_queries: 20000
+    R2:
+      train_fraction: 0.40
+      eval_queries: 60000
+    R3:
+      train_fraction: 1.00
+      eval_queries: all
+
+checks:
+  - name: prod_ndcg_reproduces
+    score: ref.production
+    metric: ndcg@10_click
+    split: search_val
+    expected: checks/prod_ndcg.sql
+    tol: 0.005
+  - name: queries_per_day
+    min: 30000
+  - name: candidates_per_query_mean
+    between: [20, 40]
