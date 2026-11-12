@@ -430,6 +430,18 @@
       "title": "Approval Mode",
       "type": "string"
     },
+    "scale": {
+      "default": "search",
+      "description": "search is the agent loop. calibration is the one-time G3 run. small is the K=4 unattended run. full only records Phase 2 entry.",
+      "enum": [
+        "search",
+        "calibration",
+        "small",
+        "full"
+      ],
+      "title": "Scale",
+      "type": "string"
+    },
     "dataset_spec": {
       "anyOf": [
         {

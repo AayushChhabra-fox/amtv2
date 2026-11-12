@@ -347,7 +347,7 @@ def _relative(root: Path, path: Path) -> str:
 def _signer(signer: str) -> str:
     person = signer.strip()
     if not person or person.casefold() in _RESERVED_SIGNERS:
-        raise SignoffError("G1 and G2 require a human signer")
+        raise SignoffError("a human signer is required")
     return person
 
 

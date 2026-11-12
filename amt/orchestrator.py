@@ -24,9 +24,20 @@ from amt.jobs_backend import make_backend
 from amt.ledger import append, read_rows
 from amt.preflight import preflight_candidate
 from amt.pruner import RunView, commit_rung, decide, ledger_row
+from amt.scale import (
+    finish_run_report,
+    full_budget_block_reason,
+    passing_small_receipt,
+    render_phase2_entry,
+    scale_block_reason,
+    stats_summary,
+    write_agent_stats,
+    write_calibration_claim,
+)
 from amt.schemas import (
     AgentRevision,
     Brief,
+    Candidate,
     DeltaVsBaseline,
     NodeWork,
     ProposalBatch,
@@ -35,7 +46,7 @@ from amt.schemas import (
     load_brief,
     parse_agent_output,
 )
-from amt.signoff import search_block_reason
+from amt.signoff import SignoffError, brief_key, search_block_reason
 
 # Caps from section 3.4. A schema failure is returned once; the next one escalates.
 MAX_DEBUG_ATTEMPTS = 3
@@ -50,28 +61,60 @@ def run_brief(
     fresh: bool = False,
     run_id: str | None = None,
     approval_mode: str | None = None,
+    scale: str | None = None,
 ) -> RunState:
     root = root or Path.cwd()
     brief = load_brief(brief_path)
-    if approval_mode:
+    if scale:
+        brief.scale = scale  # type: ignore[assignment]
+    conflict = scale == "calibration" and approval_mode not in {None, "every_stage"}
+    if approval_mode and not conflict and brief.scale != "calibration":
         brief.approval_mode = approval_mode  # type: ignore[assignment]
+    if brief.scale == "calibration":
+        brief.k = 1
+        brief.approval_mode = "every_stage"
     resolved_id = run_id or brief.run_id or brief.name or brief_path.stem
     state_path = root / "runs" / resolved_id / "state.json"
     if fresh and state_path.is_file():
         state_path.unlink()
     if state_path.is_file():
         state = _load_state(state_path)
-        if approval_mode:
+        if approval_mode and state.scale != "calibration" and not conflict:
             state.approval_mode = brief.approval_mode
     else:
         state = _new_state(brief, resolved_id, brief_path, root)
+    _apply_scale(brief, state)
     if state.stage in {"REPORT", "ESCALATE"}:
         return state
+    if conflict:
+        return _stop(state_path, state, root, "G3 calibration requires approval_mode every_stage.")
+    if brief.candidate is not None and state.scale != "search":
+        return _stop(
+            state_path,
+            state,
+            root,
+            "Scale runs require a search brief with no pinned candidate.",
+        )
     blocked = search_block_reason(root, brief, brief_path)
     if blocked:
-        state.stage = "ESCALATE"
+        return _stop(state_path, state, root, blocked)
+    scaled = scale_block_reason(
+        root,
+        scale=state.scale,
+        run_id=state.run_id,
+        k=state.k,
+        approval_mode=state.approval_mode,
+    )
+    if scaled:
+        return _stop(state_path, state, root, scaled)
+    if state.scale == "calibration":
+        try:
+            write_calibration_claim(root, state.run_id, brief_key(brief, brief_path))
+        except SignoffError as exc:
+            return _stop(state_path, state, root, str(exc))
+    if state.scale == "full":
+        state = _enter_phase2(state, root)
         _save(state_path, state)
-        _write_escalate(root, state, blocked)
         return state
     backend = make_backend(root)
     while state.stage not in {"REPORT", "ESCALATE"}:
@@ -179,6 +222,15 @@ def apply_agent_output(
     return updated, parsed.revision
 
 
+def _agent_payload(output: Any) -> Any:
+    """Drop the token envelope so planner and critic objects match their schemas."""
+
+    payload = coerce_role_output(output)
+    if isinstance(payload, dict) and "usage" in payload:
+        return {key: value for key, value in payload.items() if key != "usage"}
+    return payload
+
+
 def _structured_role_output(role: str, output: Any) -> bool:
     if role not in {"planner", "critic"}:
         return False
@@ -192,7 +244,7 @@ def _structured_role_output(role: str, output: Any) -> bool:
 
 
 def _reject_invalid_output(state: RunState, role: str, output: Any, root: Path) -> RunState | None:
-    output = coerce_role_output(output)
+    output = _agent_payload(output)
     if not _structured_role_output(role, output):
         return None
     state, revision = apply_agent_output(state, role, output)
@@ -324,6 +376,7 @@ def _new_state(brief: Brief, run_id: str, brief_path: Path, root: Path) -> RunSt
             round=1,
             live_nodes=[],
             approval_mode=brief.approval_mode,
+            scale=brief.scale,
             k=brief.k,
             budget_dbu=brief.budget.total_dbu,
             candidate_id="pending",
@@ -341,6 +394,7 @@ def _new_state(brief: Brief, run_id: str, brief_path: Path, root: Path) -> RunSt
         round=0,
         live_nodes=[] if pinned is None else [pinned.id],
         approval_mode=brief.approval_mode,
+        scale=brief.scale,
         k=brief.k,
         budget_dbu=brief.budget.total_dbu,
         candidate_id=pinned.id if pinned else "c00",
@@ -389,6 +443,45 @@ def _write_escalate(root: Path, state: RunState, reason: str) -> None:
     path = root / "runs" / state.run_id / "ESCALATE.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(f"# Escalate\n\n{reason}\n")
+
+
+def _stop(state_path: Path, state: RunState, root: Path, reason: str) -> RunState:
+    state.stage = "ESCALATE"
+    _save(state_path, state)
+    _write_escalate(root, state, reason)
+    return state
+
+
+def _apply_scale(brief: Brief, state: RunState) -> None:
+    """Keep the in-memory brief aligned with the run that is already on disk."""
+
+    brief.scale = state.scale  # type: ignore[assignment]
+    if state.scale == "calibration":
+        brief.k = 1
+        brief.approval_mode = "every_stage"
+        state.k = 1
+        state.approval_mode = "every_stage"
+    elif state.scale == "small":
+        brief.k = state.k
+        brief.approval_mode = state.approval_mode
+
+
+def _enter_phase2(state: RunState, root: Path) -> RunState:
+    reason = full_budget_block_reason(root)
+    if reason:
+        state.stage = "ESCALATE"
+        _write_escalate(root, state, reason)
+        return state
+    receipt = passing_small_receipt(root)
+    if receipt is None:
+        state.stage = "ESCALATE"
+        _write_escalate(root, state, "Full budget is not ready. No passing K=4 run is recorded.")
+        return state
+    path = root / "runs" / state.run_id / "phase2_entry.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(render_phase2_entry(state.run_id, receipt), encoding="utf-8")
+    state.stage = "REPORT"
+    return state
 
 
 def _write_digest(root: Path, state: RunState) -> None:
@@ -467,7 +560,7 @@ def _search_plan(state: RunState, brief: Brief, root: Path) -> RunState:
         output_path=output_path,
         note=_plan_note(state, feedback),
     )
-    payload = coerce_role_output(output)
+    payload = _agent_payload(output)
     if not _structured_role_output("planner", payload):
         return _schema_retry(state, root, "planner output had no candidates")
     state, revision = apply_agent_output(state, "planner", payload)
@@ -498,7 +591,7 @@ def _search_critique(state: RunState, brief: Brief, root: Path) -> RunState:
         output_path=output_path,
         inputs=[str(_proposals_path(root, state))],
     )
-    payload = coerce_role_output(output)
+    payload = _agent_payload(output)
     if not _structured_role_output("critic", payload):
         return _schema_retry(state, root, "critic output had no verdicts")
     state, revision = apply_agent_output(state, "critic", payload)
@@ -528,12 +621,12 @@ def _search_critique(state: RunState, brief: Brief, root: Path) -> RunState:
         if _duplicate(candidate, passed, root):
             continue
         passed.append(candidate)
-    passed = passed[: state.k]
+    passed = _shortlist(state, passed)
     if not passed:
         return _escalate(state, root, "critic dropped every proposal")
     needed = min(3, state.k)
     families = {candidate.family for candidate in passed}
-    if len(families) < needed:
+    if state.round == 1 and state.round_operator == "draft" and len(families) < needed:
         state.critic_revisions += 1
         message = f"shortlist has {len(families)} families; need at least {needed}"
         if state.critic_revisions > 1:
@@ -551,8 +644,10 @@ def _search_critique(state: RunState, brief: Brief, root: Path) -> RunState:
     ]
     combine_parents = _combine_parents(state) if state.round_operator == "combine" else []
     for candidate in passed:
-        parents = list(combine_parents) if combine_parents else (
-            [candidate.parent_id] if candidate.parent_id else []
+        parents = (
+            list(combine_parents)
+            if combine_parents
+            else ([candidate.parent_id] if candidate.parent_id else [])
         )
         state.nodes.append(
             NodeWork(
@@ -715,9 +810,7 @@ def _search_submit(state: RunState, brief: Brief, root: Path, backend: object) -
             params=params,
             idempotency_token=f"{state.run_id}:{key}",
         )
-        record.update(
-            {"job_run_id": job_run_id, "submitted_at": time.time(), "dbu_est": estimate}
-        )
+        record.update({"job_run_id": job_run_id, "submitted_at": time.time(), "dbu_est": estimate})
         state.submitted_jobs[key] = record
     node.status = "submitted"
     state.candidate_id = node.node_id
@@ -901,6 +994,10 @@ def _search_confirm(state: RunState, brief: Brief, root: Path, backend: object) 
 
 
 def _advance_round(state: RunState, brief: Brief, root: Path, survived: bool) -> RunState:
+    if state.scale == "calibration":
+        state.stage = "REPORT"
+        _write_report(root, state, brief)
+        return state
     if not survived:
         state.outer_retries += 1
         if state.outer_retries > MAX_OUTER_RETRIES:
@@ -1030,6 +1127,16 @@ def _proposal_problems(state: RunState, batch: ProposalBatch) -> list[str]:
         if key in seen:
             problems.append(f"{candidate.id} repeats a proposal already in this batch")
         seen.add(key)
+    if state.scale == "small" and state.round == 1 and state.round_operator == "draft":
+        if len(batch.candidates) < 8:
+            problems.append(
+                f"round 1 on a K=4 run must propose 8 drafts; got {len(batch.candidates)}"
+            )
+    if state.scale == "small" and state.round_operator == "improve":
+        for parent in _allowed_parent_list(state):
+            count = sum(1 for candidate in batch.candidates if candidate.parent_id == parent)
+            if count < 3:
+                problems.append(f"propose 3 improvements of {parent}; found {count}")
     return problems
 
 
@@ -1055,11 +1162,10 @@ def _allowed_parent_list(state: RunState) -> list[str]:
     if state.round_operator == "combine":
         return _combine_parents(state)
     previous = state.round - 1
-    return [
-        node.node_id
-        for node in state.nodes
-        if node.status == "kept" and node.search_round == previous
-    ]
+    kept = [node for node in state.nodes if node.status == "kept" and node.search_round == previous]
+    if state.scale == "small":
+        return _top_lineages(kept, limit=2)
+    return [node.node_id for node in kept]
 
 
 def _combine_parents(state: RunState) -> list[str]:
@@ -1215,6 +1321,14 @@ def _plan_note(state: RunState, feedback: str) -> str:
         lines.append("Propose one combine of the two parent nodes.")
     if state.round_operator == "draft" and state.round == 1:
         lines.append("Prefer a simple design. No ensembles and no heavy tuning.")
+    if state.scale == "calibration":
+        lines.append("This is the one-time G3 calibration. Propose one draft.")
+    if state.scale == "small" and state.round == 1 and state.round_operator == "draft":
+        lines.append("Propose 8 drafts across families. The critic keeps 4, at least 3 families.")
+    if state.scale == "small" and state.round_operator == "improve":
+        lines.append(
+            "Propose 3 atomic improvements for each allowed parent. The critic keeps 2 per parent."
+        )
     if state.round_operator == "draft" and state.round > 1:
         lines.append("The lineage plateaued. Draft one new family.")
     if feedback:
@@ -1243,9 +1357,7 @@ def _clear_feedback(root: Path, state: RunState) -> None:
 def _write_round_digest(root: Path, state: RunState, decision: Any) -> None:
     path = root / "runs" / state.run_id / f"round_{state.round}.md"
     rows = [
-        row
-        for row in read_rows(root)
-        if row.run_id == state.run_id and row.round == state.round
+        row for row in read_rows(root) if row.run_id == state.run_id and row.round == state.round
     ]
     lines = [
         f"# Round {state.round}",
@@ -1280,31 +1392,50 @@ def _write_round_digest(root: Path, state: RunState, decision: Any) -> None:
             lines.append(
                 f"- {node_id} delta {delta.point:.4f} CI [{delta.ci_lo:.4f}, {delta.ci_hi:.4f}]"
             )
-    lines.extend(
-        ["", "## Spend", f"Spent {state.spent_dbu:.3f} / {state.budget_dbu:.3f} DBU", ""]
-    )
+    lines.extend(["", "## Spend", f"Spent {state.spent_dbu:.3f} / {state.budget_dbu:.3f} DBU", ""])
+    lines.append(stats_summary(write_agent_stats(root, state)))
+    lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def _write_report(root: Path, state: RunState, brief: Brief) -> None:
-    del brief
     path = root / "runs" / state.run_id / "report.md"
-    promoted = ", ".join(state.promoted) if state.promoted else "none"
-    lines = [
-        f"# Report {state.run_id}",
-        "",
-        f"Promoted: {promoted}",
-        f"Spent {state.spent_dbu:.3f} / {state.budget_dbu:.3f} DBU",
-        "",
-        "Live nodes: " + (", ".join(state.live_nodes) or "(none)"),
-        "",
-    ]
-    if not state.promoted:
-        lines.append("No candidate cleared the promotion rule.")
-    else:
-        lines.append("Confirmation scored the promoted nodes on select_holdout.")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    path.write_text(finish_run_report(root, state, brief), encoding="utf-8")
+
+
+def _shortlist(state: RunState, passed: list[Candidate]) -> list[Candidate]:
+    """K=4 improvement rounds keep two children of each parent. Other rounds keep K."""
+
+    if state.scale == "small" and state.round_operator == "improve":
+        kept: list[Candidate] = []
+        per_parent: dict[str, int] = {}
+        for candidate in passed:
+            parent = candidate.parent_id or ""
+            if per_parent.get(parent, 0) >= 2:
+                continue
+            per_parent[parent] = per_parent.get(parent, 0) + 1
+            kept.append(candidate)
+            if len(kept) >= state.k:
+                break
+        return kept
+    return passed[: state.k]
+
+
+def _top_lineages(nodes: list[NodeWork], limit: int) -> list[str]:
+    """Best kept node in each family, then the strongest families."""
+
+    best: dict[str, NodeWork] = {}
+    for node in nodes:
+        current = best.get(node.family)
+        if current is None or _lineage_rank(node) < _lineage_rank(current):
+            best[node.family] = node
+    ordered = sorted(best.values(), key=_lineage_rank)
+    return [node.node_id for node in ordered[:limit]]
+
+
+def _lineage_rank(node: NodeWork) -> tuple[float, str]:
+    return (-(node.delta_point or 0.0), node.node_id)
 
 
 def _approved(root: Path, run_id: str) -> bool:
@@ -1313,4 +1444,3 @@ def _approved(root: Path, run_id: str) -> bool:
 
 def _consume_approval(root: Path, run_id: str) -> None:
     (root / "runs" / run_id / "APPROVE").unlink(missing_ok=True)
-

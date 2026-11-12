@@ -37,6 +37,7 @@ def build_context(
         f"Brief: {brief.name or brief.resolved_dataset_spec() or 'untitled'}",
         f"Metric: {metric}",
         f"Approval mode: {brief.approval_mode}",
+        f"Scale: {brief.scale}",
         f"Keep at most K={brief.k} candidates.",
         "",
         "Task:",
@@ -210,7 +211,6 @@ def _output_contract(role: str) -> str:
         return "Write review.md ending with a line VERDICT: PASS or VERDICT: FAIL."
     if role == "implementer":
         return (
-            "Write model.py implementing fit, score, save, and load. "
-            "Stay inside candidates/<id>/."
+            "Write model.py implementing fit, score, save, and load. Stay inside candidates/<id>/."
         )
     return "Follow the role prompt."

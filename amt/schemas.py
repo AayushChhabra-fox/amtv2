@@ -16,6 +16,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 ApprovalMode = Literal["none", "every_stage", "round_shortlist"]
+ScaleMode = Literal["search", "calibration", "small", "full"]
 Operator = Literal["draft", "improve", "debug", "ablate", "combine"]
 Kind = Literal["model", "baseline"]
 Rung = Literal["R0", "R1", "R2", "R3"]
@@ -162,6 +163,13 @@ class Brief(BaseModel):
     name: str | None = None
     run_id: str | None = None
     approval_mode: ApprovalMode = "none"
+    scale: ScaleMode = Field(
+        default="search",
+        description=(
+            "search is the agent loop. calibration is the one-time G3 run. "
+            "small is the K=4 unattended run. full only records Phase 2 entry."
+        ),
+    )
     dataset_spec: str | None = Field(
         default=None,
         description="Path of the dataset spec folder, for example datasets/nfy_article_rerank.",
@@ -366,6 +374,7 @@ class RunState(BaseModel):
     k: int = Field(default=4, ge=1)
     budget_dbu: float = Field(default=0.0, ge=0)
     approval_mode: ApprovalMode = "none"
+    scale: ScaleMode = "search"
     revisions: int = Field(default=0, ge=0, description="Agent revisions already spent.")
     candidate_id: str
     family: str

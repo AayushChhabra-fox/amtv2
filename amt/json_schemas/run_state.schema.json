@@ -274,6 +274,17 @@
       "title": "Approval Mode",
       "type": "string"
     },
+    "scale": {
+      "default": "search",
+      "enum": [
+        "search",
+        "calibration",
+        "small",
+        "full"
+      ],
+      "title": "Scale",
+      "type": "string"
+    },
     "revisions": {
       "default": 0,
       "description": "Agent revisions already spent.",

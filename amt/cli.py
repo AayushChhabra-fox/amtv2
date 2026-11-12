@@ -1,4 +1,4 @@
-"""Command line for the walking skeleton and the G1 / G2 gates."""
+"""Command line for the walking skeleton, the gates, and the scale-up runs."""
 
 from __future__ import annotations
 
@@ -12,7 +12,13 @@ from amt.ladder import load_cells as load_ladder_cells
 from amt.noise import GateDataError, build_noise_report, round0_jobs
 from amt.noise import load_cells as load_noise_cells
 from amt.orchestrator import run_brief
-from amt.schemas import load_brief
+from amt.scale import (
+    full_budget_block_reason,
+    g3_is_current,
+    sign_g3,
+    write_agent_stats,
+)
+from amt.schemas import RunState, load_brief
 from amt.signoff import (
     SignoffError,
     g1_is_current,
@@ -43,6 +49,12 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         choices=["none", "every_stage", "round_shortlist"],
     )
+    run_parser.add_argument(
+        "--scale",
+        default=None,
+        choices=["search", "calibration", "small", "full"],
+        help="calibration is G3, small is the K=4 run, full records Phase 2 entry",
+    )
 
     status_parser = sub.add_parser("status", help="print run status")
     status_parser.add_argument("--run-id", default="toy")
@@ -69,12 +81,17 @@ def main(argv: list[str] | None = None) -> int:
     ladder_parser.add_argument("--root", type=Path, default=None)
 
     sign_parser = sub.add_parser("sign", help="sign gate G1 or G2")
-    sign_parser.add_argument("gate", choices=["g1", "g2"])
+    sign_parser.add_argument("gate", choices=["g1", "g2", "g3"])
     sign_parser.add_argument("--signer", required=True)
     sign_parser.add_argument("--brief", type=Path)
     sign_parser.add_argument("--dataset", default=None)
     sign_parser.add_argument("--manifest", type=Path)
+    sign_parser.add_argument("--run-id", default=None)
     sign_parser.add_argument("--root", type=Path, default=None)
+
+    stats_parser = sub.add_parser("stats", help="print agent statistics for a run")
+    stats_parser.add_argument("--run-id", required=True)
+    stats_parser.add_argument("--root", type=Path, default=None)
 
     gates_parser = sub.add_parser("gates", help="show whether G1 and G2 are signed")
     gates_parser.add_argument("--brief", type=Path, required=True)
@@ -90,6 +107,8 @@ def main(argv: list[str] | None = None) -> int:
         return _sign(root, args)
     if args.command == "gates":
         return _gates(root, args)
+    if args.command == "stats":
+        return _stats(root, args)
     if args.command == "run":
         state = run_brief(
             args.brief,
@@ -97,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
             fresh=args.fresh,
             run_id=args.run_id,
             approval_mode=args.approval_mode,
+            scale=args.scale,
         )
         print(format_status(root, state.run_id, audit=state.stage == "REPORT"))
         return 0 if state.stage == "REPORT" else 1
@@ -188,6 +208,16 @@ def _sign(root: Path, args: argparse.Namespace) -> int:
                 args.signer,
                 _under_root(root, args.manifest),
             )
+        elif args.gate == "g3":
+            if args.brief is None or not args.run_id:
+                print("g3 requires --brief and --run-id")
+                return 1
+            record = sign_g3(
+                root,
+                _under_root(root, args.brief),
+                args.signer,
+                args.run_id,
+            )
         else:
             if not args.dataset:
                 print("g2 requires --dataset")
@@ -218,7 +248,20 @@ def _gates(root: Path, args: argparse.Namespace) -> int:
     except (OSError, ValueError):
         name = dataset
     g2 = "current" if name and g2_is_current(root, name) else "missing"
-    print(f"G1 {g1}; G2 {g2}")
+    g3 = "current" if g3_is_current(root) else "missing"
+    ready = full_budget_block_reason(root)
+    full = "ready" if ready is None else "not ready"
+    print(f"G1 {g1}; G2 {g2}; G3 {g3}; full budget {full}")
+    return 0
+
+
+def _stats(root: Path, args: argparse.Namespace) -> int:
+    path = root / "runs" / args.run_id / "state.json"
+    if not path.is_file():
+        print(f"no state for {args.run_id}")
+        return 1
+    state = RunState.model_validate(json.loads(path.read_text(encoding="utf-8")))
+    print(write_agent_stats(root, state).model_dump_json(indent=2))
     return 0
 
 
