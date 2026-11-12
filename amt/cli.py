@@ -7,7 +7,7 @@ from pathlib import Path
 
 from amt.envutil import load_env
 from amt.orchestrator import run_brief
-from amt.status import format_status
+from amt.status import audit_rows, format_status
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -46,6 +46,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if state.stage == "REPORT" else 1
     if args.command == "status":
         print(format_status(root, args.run_id, audit=args.audit))
+        if args.audit and audit_rows(root, args.run_id):
+            return 1
         return 0
     stop_path = root / "runs" / args.run_id / "STOP"
     stop_path.parent.mkdir(parents=True, exist_ok=True)

@@ -51,6 +51,7 @@ resources:
             spark_env_vars:
               AMT_ROOT: ${workspace.file_path}
               AMT_NODE_TYPE: ${var.cpu_node_type_id}
+              AMT_CONFIRM_CALLER: orchestrator
           libraries:
             - whl: ../dist/*.whl
             - pypi:

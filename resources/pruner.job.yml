@@ -8,12 +8,20 @@ resources:
         project: amt
         component: pruner
       parameters:
-        - name: metric
-          default: ""
         - name: run_id
           default: ""
         - name: rung
-          default: R0
+          default: R1
+        - name: brief
+          default: ""
+        - name: runs
+          default: ""
+        - name: baselines
+          default: ""
+        - name: root
+          default: ""
+        - name: metric
+          default: ""
       tasks:
         - task_key: pruner
           new_cluster:
@@ -33,9 +41,17 @@ resources:
           spark_python_task:
             python_file: ../amt/pruner.py
             parameters:
-              - --metric
-              - "{{job.parameters.metric}}"
               - --run-id
               - "{{job.parameters.run_id}}"
               - --rung
               - "{{job.parameters.rung}}"
+              - --brief
+              - "{{job.parameters.brief}}"
+              - --runs
+              - "{{job.parameters.runs}}"
+              - --baselines
+              - "{{job.parameters.baselines}}"
+              - --root
+              - "{{job.parameters.root}}"
+              - --metric
+              - "{{job.parameters.metric}}"

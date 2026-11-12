@@ -62,6 +62,32 @@ def test_idempotent_token_returns_same_run(tmp_path: Path) -> None:
     assert backend.submit_count() == 1
 
 
+def test_pool_refusal_does_not_submit(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AMT_JOBS_BACKEND", "fake")
+    monkeypatch.setenv("AMT_GIT_SHA", "abc123")
+    brief = _write_brief(tmp_path)
+    payload = yaml.safe_load(brief.read_text())
+    payload["budget"]["total_dbu"] = 0.01
+    brief.write_text(yaml.safe_dump(payload))
+    state = run_brief(brief, root=tmp_path)
+    assert state.stage == "ESCALATE"
+    assert FakeJobs(tmp_path).submit_count() == 0
+    assert "refusing submit" in (tmp_path / "runs" / "toy" / "ESCALATE.md").read_text()
+
+
+def test_candidate_cap_refusal_does_not_submit(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AMT_JOBS_BACKEND", "fake")
+    monkeypatch.setenv("AMT_GIT_SHA", "abc123")
+    brief = _write_brief(tmp_path)
+    payload = yaml.safe_load(brief.read_text())
+    payload["efficiency"] = {"train_dbu_per_candidate": 0.01}
+    brief.write_text(yaml.safe_dump(payload))
+    state = run_brief(brief, root=tmp_path)
+    assert state.stage == "ESCALATE"
+    assert FakeJobs(tmp_path).submit_count() == 0
+    assert "cap" in (tmp_path / "runs" / "toy" / "ESCALATE.md").read_text()
+
+
 def test_completed_run_is_a_no_op(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("AMT_JOBS_BACKEND", "fake")
     monkeypatch.setenv("AMT_GIT_SHA", "abc123")

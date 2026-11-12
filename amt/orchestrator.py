@@ -10,7 +10,14 @@ from pathlib import Path
 from typing import Any
 
 from amt.agents import run_role
-from amt.budget import BudgetExceeded, assert_can_spend
+from amt.budget import (
+    BudgetExceeded,
+    assert_can_spend,
+    estimate_dbu,
+    inflight_dbu,
+    node_committed_dbu,
+)
+from amt.confirm import ConfirmationSubmission, confirmation_submissions
 from amt.jobs_backend import make_backend
 from amt.ledger import append, read_rows
 from amt.preflight import smoke_candidate
@@ -93,6 +100,34 @@ def _step(state: RunState, brief: Brief, root: Path, backend: object) -> RunStat
     return state
 
 
+def request_confirmation(
+    promoted: list[str],
+    *,
+    batch: str,
+    spec: str,
+    run_id: str,
+    families: dict[str, str] | None = None,
+    git_sha: str = "unknown",
+    catalog: str = "product_api_dev",
+    schema: str = "amt",
+) -> list[ConfirmationSubmission]:
+    """Open select_holdout scoring for the top 3 promoted nodes, 3 seeds each.
+
+    This is the only supported trigger. The split stays ``select_holdout``.
+    """
+
+    return confirmation_submissions(
+        promoted,
+        batch=batch,
+        spec=spec,
+        run_id=run_id,
+        families=families,
+        git_sha=git_sha,
+        catalog=catalog,
+        schema=schema,
+    )
+
+
 def apply_agent_output(
     state: RunState, role: str, payload: Any
 ) -> tuple[RunState, AgentRevision | None]:
@@ -140,8 +175,14 @@ def _submit(state: RunState, brief: Brief, root: Path, backend: object) -> bool:
         return True
     pinned = brief.candidate
     estimate = float(pinned.est_dbu if pinned else 0.1)
+    committed = node_committed_dbu(read_rows(root), state.run_id, state.candidate_id)
     try:
-        assert_can_spend(brief, state.spent_dbu, estimate)
+        assert_can_spend(
+            brief,
+            state.spent_dbu + inflight_dbu(state.submitted_jobs),
+            estimate,
+            candidate_spent_dbu=committed + inflight_dbu(state.submitted_jobs, state.candidate_id),
+        )
     except BudgetExceeded as exc:
         _write_escalate(root, state, str(exc))
         return False
@@ -190,6 +231,10 @@ def _prune(state: RunState, brief: Brief, root: Path, backend: object) -> None:
     wall_min = None
     if record.get("submitted_at") and record.get("finished_at"):
         wall_min = round((record["finished_at"] - record["submitted_at"]) / 60, 3)
+    if wall_min is None:
+        charged = float(record.get("dbu_est") or 0.0)
+    else:
+        charged = estimate_dbu(wall_min)
     if not record.get("pruned"):
         if not _ledger_has(root, state):
             claim = brief.candidate.claim if brief.candidate else "logistic regression"
@@ -203,14 +248,14 @@ def _prune(state: RunState, brief: Brief, root: Path, backend: object) -> None:
                     rung=state.rung,
                     seed=state.seed,
                     metric=float(metric) if metric is not None else None,
-                    dbu=float(record.get("dbu_est", 0.0)),
+                    dbu=charged,
                     wall_min=wall_min,
                     git_sha=state.git_sha,
                     mlflow_run_id=mlflow_run_id,
                     job_run_id=record.get("job_run_id"),
                 ),
             )
-            state.spent_dbu += float(record.get("dbu_est", 0.0))
+            state.spent_dbu += charged
         record["pruned"] = True
     record["mlflow_run_id"] = mlflow_run_id or record.get("mlflow_run_id")
     state.submitted_jobs[key] = record

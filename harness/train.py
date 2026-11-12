@@ -308,6 +308,13 @@ def log_mlflow(result: TrainResult, experiment: str | None) -> str | None:
         return active.info.run_id
 
 
+def _guard_confirmation_caller(confirmation: bool) -> None:
+    """Holdout scoring runs only inside the orchestrator's confirm job."""
+
+    if confirmation and os.environ.get("AMT_CONFIRM_CALLER") != "orchestrator":
+        raise SystemExit("confirmation is triggered only by the orchestrator")
+
+
 def _guard_split(split: str, confirmation: bool, final_holdout: bool) -> None:
     if split == "final_holdout" and not (confirmation and final_holdout):
         raise SystemExit("final_holdout requires --confirmation and --final-holdout")
@@ -343,6 +350,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--final-holdout", action="store_true")
     parser.add_argument("--baseline-scores", default="")
     args = parser.parse_args(argv)
+    _guard_confirmation_caller(args.confirmation)
     _guard_split(args.split, args.confirmation, args.final_holdout)
     spec = load_spec(resolve_spec(args.spec))
     catalog = args.catalog or spec.output.catalog
