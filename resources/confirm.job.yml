@@ -36,6 +36,24 @@ resources:
           default: candidate
         - name: run_id
           default: ""
+        - name: node_id
+          default: ""
+        - name: parent_id
+          default: ""
+        - name: operator
+          default: draft
+        - name: paired_reference
+          default: production
+        - name: baseline_scores
+          default: ""
+        - name: confirm_token
+          default: ""
+        - name: root
+          default: ""
+        - name: shared_cluster
+          default: ""
+        - name: device
+          default: cpu
       tasks:
         - task_key: confirm
           new_cluster:
@@ -51,7 +69,6 @@ resources:
             spark_env_vars:
               AMT_ROOT: ${workspace.file_path}
               AMT_NODE_TYPE: ${var.cpu_node_type_id}
-              AMT_CONFIRM_CALLER: orchestrator
           libraries:
             - whl: ../dist/*.whl
             - pypi:
@@ -94,3 +111,19 @@ resources:
               - "{{job.parameters.family}}"
               - --run-id
               - "{{job.parameters.run_id}}"
+              - --node-id
+              - "{{job.parameters.node_id}}"
+              - --parent-id
+              - "{{job.parameters.parent_id}}"
+              - --operator
+              - "{{job.parameters.operator}}"
+              - --paired-reference
+              - "{{job.parameters.paired_reference}}"
+              - --baseline-scores
+              - "{{job.parameters.baseline_scores}}"
+              - --confirm-token
+              - "{{job.parameters.confirm_token}}"
+              - --root
+              - "{{job.parameters.root}}"
+              - --shared-cluster
+              - "{{job.parameters.shared_cluster}}"

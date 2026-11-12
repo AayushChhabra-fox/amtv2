@@ -18,7 +18,30 @@ from pathlib import Path
 
 import numpy as np
 
-_ROOT = Path(__file__).resolve().parents[1]
+
+def _bundle_root() -> Path:
+    """Directory that contains ``harness/``. Databricks may copy the entry script."""
+
+    script = globals().get("__file__")
+    if script:
+        resolved = Path(script).resolve()
+        for parent in resolved.parents:
+            if (parent / "harness").is_dir() and (parent / "amt").is_dir():
+                return parent
+    argv = sys.argv
+    if "--root" in argv:
+        index = argv.index("--root")
+        if index + 1 < len(argv):
+            root = Path(argv[index + 1])
+            if (root / "harness").is_dir():
+                return root
+    env = os.environ.get("AMT_ROOT")
+    if env and (Path(env) / "harness").is_dir():
+        return Path(env)
+    return Path.cwd()
+
+
+_ROOT = _bundle_root()
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
@@ -312,11 +335,22 @@ def log_mlflow(result: TrainResult, experiment: str | None) -> str | None:
         return active.info.run_id
 
 
-def _guard_confirmation_caller(confirmation: bool) -> None:
-    """Holdout scoring runs only inside the orchestrator's confirm job."""
+def _guard_confirm_token(confirmation: bool, token: str) -> None:
+    """Holdout scoring runs only with a one-time token file."""
 
-    if confirmation and os.environ.get("AMT_CONFIRM_CALLER") != "orchestrator":
-        raise SystemExit("confirmation is triggered only by the orchestrator")
+    if not confirmation:
+        return
+    if not token:
+        raise SystemExit("confirmation requires --confirm-token")
+    if not Path(token).is_file():
+        raise SystemExit("confirmation token is missing or already used")
+
+
+def _guard_confirmation_caller(confirmation: bool) -> None:
+    """Backward-compatible name. Tokens replaced the cluster environment variable."""
+
+    if confirmation:
+        raise SystemExit("confirmation requires --confirm-token")
 
 
 def _guard_split(split: str, confirmation: bool, final_holdout: bool) -> None:
@@ -353,8 +387,48 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--confirmation", action="store_true")
     parser.add_argument("--final-holdout", action="store_true")
     parser.add_argument("--baseline-scores", default="")
+    parser.add_argument("--paired-reference", default="production")
+    parser.add_argument("--write-scores", default="")
+    parser.add_argument("--root", default="")
+    parser.add_argument("--confirm-token", default="")
+    parser.add_argument("--shared-cluster", default="")
+    parser.add_argument("--matrix", default="")
     args = parser.parse_args(argv)
-    _guard_confirmation_caller(args.confirmation)
+    if args.root:
+        root_path = str(Path(args.root).resolve())
+        if root_path not in sys.path:
+            sys.path.insert(0, root_path)
+    if args.matrix:
+        _run_matrix(args)
+        return
+    _execute(args)
+
+
+def _run_matrix(args: argparse.Namespace) -> None:
+    cells = json.loads(Path(args.matrix).read_text(encoding="utf-8"))
+    if not isinstance(cells, list):
+        raise SystemExit("matrix file must be a JSON list")
+    failures = 0
+    for cell in cells:
+        if not isinstance(cell, dict):
+            raise SystemExit("matrix cell must be an object")
+        cloned = argparse.Namespace(**vars(args))
+        cloned.matrix = ""
+        for key, value in cell.items():
+            field = key.replace("-", "_")
+            if hasattr(cloned, field):
+                setattr(cloned, field, value)
+        try:
+            _execute(cloned)
+        except SystemExit as exc:
+            failures += 1 if exc.code else 0
+    if failures:
+        raise SystemExit(1)
+
+
+def _execute(args: argparse.Namespace) -> None:
+    args.seed = int(args.seed)
+    _guard_confirm_token(args.confirmation, args.confirm_token)
     _guard_split(args.split, args.confirmation, args.final_holdout)
     spec = load_spec(resolve_spec(args.spec))
     catalog = args.catalog or spec.output.catalog
@@ -411,9 +485,13 @@ def main(argv: list[str] | None = None) -> None:
     )
     if requirements_sha:
         tags["requirements_sha"] = requirements_sha
-    baseline_scores = None
+    from harness.scores_io import align_scores, read_scores, reference_vector, write_scores
+
+    columns = getattr(evaluation, "columns", None)
+    paired = reference_vector(evaluation, args.paired_reference) if columns else None
+    keyed = None
     if args.baseline_scores:
-        baseline_scores = json.loads(Path(args.baseline_scores).read_text())
+        keyed = align_scores(evaluation, read_scores(Path(args.baseline_scores)))
     result = train_ranker(
         ranker=ranker,
         train=train,
@@ -423,9 +501,29 @@ def main(argv: list[str] | None = None) -> None:
         deadline_s=args.deadline_seconds or DEADLINES[args.rung],
         require_loss=not args.baseline and args.rung == "R0",
         check_determinism=args.rung == "R0",
-        baseline_scores=baseline_scores,
+        baseline_scores=None if paired is None else paired.tolist(),
         tags=tags,
     )
+    if result.status == "ok" and keyed is not None:
+        from harness.evaluate import paired_day_blocked_delta
+
+        second = paired_day_blocked_delta(
+            evaluation,
+            np.asarray(ranker.score(evaluation.without_labels()), dtype=float),
+            keyed,
+            seed=args.seed,
+        )
+        result.metrics["delta_lgbm_point"] = second["point"]
+        result.metrics["delta_lgbm_ci_lo"] = second["ci_lo"]
+        result.metrics["delta_lgbm_ci_hi"] = second["ci_hi"]
+    if result.status == "ok" and args.write_scores:
+        write_scores(
+            Path(args.write_scores),
+            evaluation,
+            np.asarray(ranker.score(evaluation.without_labels()), dtype=float),
+        )
+    if str(args.shared_cluster).lower() in {"1", "true", "yes"}:
+        result.tags["shared_cluster"] = "true"
     if requirements_sha:
         result.metrics["install_s"] = round(install_s, 4)
         result.tags["requirements_sha"] = requirements_sha
@@ -437,6 +535,10 @@ def main(argv: list[str] | None = None) -> None:
         "mlflow_run_id": run_id,
     }
     print(json.dumps(payload))
+    if result.status == "ok" and args.confirmation and args.confirm_token:
+        token_path = Path(args.confirm_token)
+        if token_path.is_file():
+            token_path.unlink()
     if result.status != "ok":
         raise SystemExit(1)
 

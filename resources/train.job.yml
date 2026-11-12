@@ -40,6 +40,26 @@ resources:
           default: candidate
         - name: run_id
           default: ""
+        - name: node_id
+          default: ""
+        - name: parent_id
+          default: ""
+        - name: operator
+          default: draft
+        - name: paired_reference
+          default: production
+        - name: baseline_scores
+          default: ""
+        - name: write_scores
+          default: ""
+        - name: root
+          default: ""
+        - name: shared_cluster
+          default: ""
+        - name: matrix
+          default: ""
+        - name: device
+          default: cpu
       tasks:
         - task_key: train
           new_cluster:
@@ -96,3 +116,21 @@ resources:
               - "{{job.parameters.family}}"
               - --run-id
               - "{{job.parameters.run_id}}"
+              - --node-id
+              - "{{job.parameters.node_id}}"
+              - --parent-id
+              - "{{job.parameters.parent_id}}"
+              - --operator
+              - "{{job.parameters.operator}}"
+              - --paired-reference
+              - "{{job.parameters.paired_reference}}"
+              - --baseline-scores
+              - "{{job.parameters.baseline_scores}}"
+              - --write-scores
+              - "{{job.parameters.write_scores}}"
+              - --root
+              - "{{job.parameters.root}}"
+              - --shared-cluster
+              - "{{job.parameters.shared_cluster}}"
+              - --matrix
+              - "{{job.parameters.matrix}}"
