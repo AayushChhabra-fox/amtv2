@@ -356,6 +356,10 @@ def existing_cluster_payload(
     if settings.fixed_cluster or params.get("device") == "gpu":
         if "--root" not in rendered:
             rendered.extend(["--root", workspace_path])
+        else:
+            index = rendered.index("--root") + 1
+            if index < len(rendered) and not rendered[index]:
+                rendered[index] = workspace_path
     return {
         "run_name": f"amt_{job}",
         "idempotency_token": idempotency_token,

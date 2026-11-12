@@ -118,7 +118,7 @@ Writes `runs/<id>/APPROVE`. The next `amt run` of that id consumes the file and 
 uv run amt noise --brief <brief> [--plan] [--observations <file>] [--root DIR]
 ```
 
-Gate G1. `--plan` prints the round-0 `train` parameters and does not submit them. `--submit` launches one matrix job per rung (the LightGBM cells also write keyed scores). `--collect` waits, writes `round0.json`, and builds the noise report. With neither flag, `amt noise` submits and then collects. A second `--submit` does not launch a rung that already has a run id.
+Gate G1. `--plan` prints the round-0 `train` parameters and does not submit them. `--submit` launches one matrix job per rung (the LightGBM cells also write keyed scores). `--collect` waits, writes `round0.json`, and builds the noise report. With neither flag, `amt noise` submits and then collects. A second `--submit` does not launch a rung whose run is still going or succeeded; a failed rung is submitted again. Each rung's matrix file is uploaded to `<volume>/matrices/<run>/` so the cluster can read it.
 
 `--observations` reads a JSON list, or an object with an `observations` list, and writes:
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from amt import volume
 from amt.config import load_settings
 from amt.deploy import _git_sha, tree_hash
 from amt.jobs_backend import make_backend
@@ -162,10 +163,13 @@ def _submit_matrix(
         by_rung.setdefault(job.rung, []).append(job)
     directory = root / "runs" / run_name
     directory.mkdir(parents=True, exist_ok=True)
+    tree = tree_hash(root)[:12]
     for rung, group in by_rung.items():
-        token = f"{run_name}:{rung}:{tree_hash(root)[:12]}"
-        if state.get(token):
+        token = f"{run_name}:{rung}:{tree}"
+        cached = state.get(token)
+        if cached and _run_is_reusable(root, str(cached)):
             continue
+        idempotency_token = f"{token}:retry-{cached}" if cached else token
         cells = []
         for job in group:
             cell = job.params()
@@ -176,20 +180,24 @@ def _submit_matrix(
             cells.append(cell)
         matrix = directory / f"matrix-{rung}.json"
         matrix.write_text(json.dumps(cells, indent=2) + "\n", encoding="utf-8")
+        matrix_path = str(matrix)
+        if settings.jobs_backend != "fake":
+            matrix_path = settings.volume("matrices", run_name, f"{tree}-{rung}.json")
+            volume.put(root, matrix, matrix_path, overwrite=True)
         params = _base_params(
             settings,
             spec_path=spec_path,
             brief_name=brief_name,
             run_name=run_name,
             rung=rung,
-            matrix=str(matrix),
+            matrix=matrix_path,
             git_sha=_git_sha(root),
         )
         run_id = backend.submit(
             job="train",
             job_key=token,
             params=params,
-            idempotency_token=token,
+            idempotency_token=idempotency_token,
         )
         state[token] = run_id
         _save_state(root, run_name, state)

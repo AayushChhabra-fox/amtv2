@@ -61,7 +61,7 @@ def train_params(
         "experiment_name": settings.experiment_for(brief.name or spec_name or run_id),
         "git_sha": git_sha,
         "run_id": run_id,
-        "baseline_scores": baseline if scores_exist(baseline) else "",
+        "baseline_scores": baseline if scores_exist(baseline, root) else "",
         "write_scores": "",
         "root": "",
         "shared_cluster": "true" if settings.fixed_cluster else "",
@@ -74,7 +74,7 @@ def train_params(
 def missing_baseline_message(root: Path, brief: Brief, rung: str) -> str | None:
     spec = brief.resolved_dataset_spec() or ""
     path = scores_path(root, Path(spec).name, "lgbm_reference", rung, 0)
-    if scores_exist(path):
+    if scores_exist(path, root):
         return None
     return "run amt noise --submit first"
 

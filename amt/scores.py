@@ -42,5 +42,9 @@ def scores_path(
     return settings.volume(relative)
 
 
-def scores_exist(path: str) -> bool:
+def scores_exist(path: str, root: Path | None = None) -> bool:
+    if path.startswith("/Volumes/"):
+        from amt import volume
+
+        return volume.exists(root or Path.cwd(), path)
     return Path(path).is_file()

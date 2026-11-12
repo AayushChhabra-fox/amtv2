@@ -9,11 +9,10 @@ existing snapshot is never overwritten.
 from __future__ import annotations
 
 import shutil
-import subprocess
 from pathlib import Path
 
+from amt import volume
 from amt.config import Settings, load_settings
-from amt.jobs_backend import databricks_bin
 
 
 class SnapshotError(RuntimeError):
@@ -56,23 +55,13 @@ def _copy_local(dest: Path, source: Path) -> str:
 
 
 def _copy_volume(root: Path, source: Path, remote: str) -> None:
-    probe = subprocess.run(
-        [databricks_bin(), "fs", "ls", remote],
-        cwd=root,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if probe.returncode == 0 and "model.py" in probe.stdout:
+    if volume.exists(root, f"{remote}/model.py"):
         return
     for name in ("model.py", "requirements.txt"):
         local = source / name
         if not local.is_file():
             continue
-        copied = subprocess.run(
-            [databricks_bin(), "fs", "cp", str(local), f"{remote}/{name}"],
-            cwd=root,
-            check=False,
-        )
-        if copied.returncode != 0:
-            raise SnapshotError(f"upload of {name} to {remote} failed")
+        try:
+            volume.put(root, local, f"{remote}/{name}")
+        except volume.VolumeError as exc:
+            raise SnapshotError(str(exc)) from exc

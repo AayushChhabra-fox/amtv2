@@ -97,7 +97,8 @@ def test_keyed_scores_fail_closed_on_partial_coverage(tmp_path: Path) -> None:
         align_scores(frame, [{"query_id": "q1", "item_id": "a", "score": 1.0}])
 
 
-def test_round0_file_supplies_the_pruner_baseline(tmp_path: Path) -> None:
+def test_round0_file_supplies_the_pruner_baseline(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AMT_JOBS_BACKEND", "fake")
     brief = Brief.model_validate(
         {
             "name": "nfy",
@@ -134,6 +135,55 @@ def test_noise_submit_is_idempotent(tmp_path: Path, monkeypatch) -> None:
     jobs = FakeJobs(tmp_path).submitted_jobs()
     assert jobs
     assert set(jobs) == {"train"}
+
+
+def test_failed_matrix_rung_is_resubmitted(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AMT_JOBS_BACKEND", "fake")
+    import amt.batch
+    from amt.batch import submit_noise
+    from harness.data.contract import load_spec
+
+    brief = load_brief(ROOT / "briefs" / "toy.yaml")
+    spec = str(ROOT / "datasets" / "nfy_article_rerank")
+    reference = list(load_spec(spec).reference_scores)
+    state_path = submit_noise(tmp_path, brief, spec, reference)
+    first = json.loads(state_path.read_text(encoding="utf-8"))
+    monkeypatch.setattr(amt.batch, "_run_is_reusable", lambda _root, _run: False)
+    submit_noise(tmp_path, brief, spec, reference)
+    second = json.loads(state_path.read_text(encoding="utf-8"))
+    assert second.keys() == first.keys()
+    assert all(second[key] != first[key] for key in first)
+    tokens = json.loads((tmp_path / ".amt" / "fake_jobs.json").read_text())["submits"]
+    assert all(f"{key}:retry-{first[key]}" in tokens for key in first)
+
+
+def test_volume_calls_use_dbfs_uris(tmp_path: Path, monkeypatch) -> None:
+    import subprocess
+
+    import amt.volume
+    from amt.scores import scores_exist
+
+    calls: list[list[str]] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        if args[2] == "ls" and args[3].endswith("/missing"):
+            return subprocess.CompletedProcess(args, 1, "", "Error: Path not found")
+        if args[2] == "ls" and args[3].endswith("/denied"):
+            return subprocess.CompletedProcess(args, 1, "", "required scopes: files")
+        return subprocess.CompletedProcess(args, 0, "seed=0.parquet\nother/\n", "")
+
+    monkeypatch.setattr(amt.volume.subprocess, "run", fake_run)
+    base = "/Volumes/c/s/v"
+    amt.volume.put(tmp_path, tmp_path / "m.json", f"{base}/matrices/m.json", overwrite=True)
+    assert calls[-1][2:] == ["cp", str(tmp_path / "m.json"), f"dbfs:{base}/matrices/m.json",
+                             "--overwrite"]
+    assert scores_exist(f"{base}/R1/seed=0.parquet", tmp_path)
+    assert calls[-1][2:] == ["ls", f"dbfs:{base}/R1"]
+    assert not scores_exist(f"{base}/R1/seed=1.parquet", tmp_path)
+    assert not scores_exist(f"{base}/missing/seed=0.parquet", tmp_path)
+    with pytest.raises(amt.volume.VolumeError, match="scopes"):
+        scores_exist(f"{base}/denied/seed=0.parquet", tmp_path)
 
 
 def test_final_refuses_a_second_call(tmp_path: Path, monkeypatch) -> None:
@@ -226,6 +276,21 @@ def test_fixed_cluster_payload_has_no_new_cluster() -> None:
     assert "libraries" not in body["tasks"][0]
     rendered = " ".join(body["tasks"][0]["spark_python_task"]["parameters"])
     assert "whl" not in rendered
+
+
+def test_fixed_cluster_payload_fills_an_empty_root(monkeypatch) -> None:
+    monkeypatch.setenv("AMT_CLUSTER_ID", "cluster-1")
+    body = existing_cluster_payload(
+        "train",
+        {"candidate_id": "c00", "root": ""},
+        workspace_path="/Workspace/amt",
+        cluster_id="cluster-1",
+        idempotency_token="token",
+        settings=load_settings(),
+    )
+    parameters = body["tasks"][0]["spark_python_task"]["parameters"]
+    assert parameters.count("--root") == 1
+    assert parameters[parameters.index("--root") + 1] == "/Workspace/amt"
 
 
 def test_gpu_candidate_routes_to_the_gpu_cluster(monkeypatch) -> None:

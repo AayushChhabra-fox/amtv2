@@ -22,21 +22,13 @@ def issue_token(root: Path, *, settings: Settings | None = None) -> str:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("once\n", encoding="utf-8")
         return str(path)
-    import subprocess
-
-    from amt.jobs_backend import databricks_bin
+    from amt import volume
 
     remote = settings.volume("confirm_tokens", name)
     local = root / ".amt" / "tokens" / name
     local.parent.mkdir(parents=True, exist_ok=True)
     local.write_text("once\n", encoding="utf-8")
-    copied = subprocess.run(
-        [databricks_bin(), "fs", "cp", str(local), remote],
-        cwd=root,
-        check=False,
-    )
-    if copied.returncode != 0:
-        raise RuntimeError(f"could not write confirmation token {remote}")
+    volume.put(root, local, remote)
     return remote
 
 
