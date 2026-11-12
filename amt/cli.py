@@ -271,7 +271,7 @@ def _ladder(root: Path, args: argparse.Namespace) -> int:
             return 0
     bare = not args.plan and args.observations is None and not args.submit and not args.collect
     if args.submit or bare:
-        submit_ladder(root, dataset, args.dataset)
+        submit_ladder(root, dataset, str(_dataset_path(root, args.dataset) or args.dataset))
         if args.submit and not args.collect and not bare:
             print("submitted")
             return 0
@@ -376,9 +376,16 @@ def _stats(root: Path, args: argparse.Namespace) -> int:
     return 0
 
 
+def _dataset_path(root: Path, text: str) -> Path | None:
+    for candidate in (resolve_under(root, text), Path(root) / "datasets" / text):
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def _dataset(root: Path, text: str) -> tuple[str, float | None]:
-    path = resolve_under(root, text)
-    if path.exists():
+    path = _dataset_path(root, text)
+    if path is not None:
         spec = load_spec(path)
         return spec.name, float(spec.sampling.rungs["R1"].train_fraction)
     return text, None

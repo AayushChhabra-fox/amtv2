@@ -322,6 +322,16 @@ def test_spec_is_sent_relative_to_the_bundle(tmp_path: Path) -> None:
     assert _bundle_relative_spec(tmp_path, {"spec": "/elsewhere/x"})["spec"] == "/elsewhere/x"
 
 
+def test_ladder_dataset_name_resolves_to_its_spec() -> None:
+    from amt.cli import _dataset, _dataset_path
+
+    root = Path(__file__).resolve().parents[1]
+    demo = "nfy_article_rerank_demo"
+    assert _dataset_path(root, demo) == root / "datasets" / demo
+    name, fraction = _dataset(root, demo)
+    assert name == demo and fraction is not None
+
+
 def test_fixed_cluster_payload_fills_an_empty_root(monkeypatch) -> None:
     monkeypatch.setenv("AMT_CLUSTER_ID", "cluster-1")
     body = existing_cluster_payload(
