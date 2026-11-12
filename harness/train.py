@@ -34,6 +34,7 @@ from harness.data.contract import HOLDOUT_SPLITS, SPLIT_NAMES, load_spec  # noqa
 from harness.data.sampling import choose_query_ids, query_ids_hash, query_times  # noqa: E402
 from harness.evaluate import metrics, paired_day_blocked_delta  # noqa: E402
 from harness.interface import FitContext, RankingFrame  # noqa: E402
+from harness.ladder import LADDER_IDS, make_ladder_ranker  # noqa: E402
 from harness.latency import LATENCY_NODE_TYPE, latency_p95_ms  # noqa: E402
 
 DEADLINES = {"R0": 600, "R1": 1800, "R2": 5400, "R3": 14400}
@@ -190,6 +191,8 @@ def make_ranker(baseline: str | None, model_path: Path | None, reference: str | 
         return RandomRanker()
     if baseline == "lgbm_reference":
         return LGBMReferenceRanker()
+    if baseline in LADDER_IDS:
+        return make_ladder_ranker(baseline)
     if model_path is None:
         raise FileNotFoundError("candidate model path is required")
     return load_ranker_instance(model_path)

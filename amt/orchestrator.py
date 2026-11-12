@@ -23,6 +23,7 @@ from amt.ledger import append, read_rows
 from amt.preflight import smoke_candidate
 from amt.pruner import ledger_row
 from amt.schemas import AgentRevision, Brief, RunState, load_brief, parse_agent_output
+from amt.signoff import search_block_reason
 
 
 def run_brief(
@@ -46,6 +47,12 @@ def run_brief(
     else:
         state = _new_state(brief, resolved_id, brief_path, root)
     if state.stage in {"REPORT", "ESCALATE"}:
+        return state
+    blocked = search_block_reason(root, brief, brief_path)
+    if blocked:
+        state.stage = "ESCALATE"
+        _save(state_path, state)
+        _write_escalate(root, state, blocked)
         return state
     backend = make_backend(root)
     while state.stage not in {"REPORT", "ESCALATE"}:
