@@ -21,7 +21,12 @@ sources:
   impressions:
     table: pnr_prod.silver.news_impressions
     date_col: make_date(year, month, day)
-    partition_filter: "{date_col} BETWEEN DATE '{start}' AND DATE '{end}'"
+    # Unpartitioned and unclustered (12 TB). The padded timestamp bound lets Delta skip
+    # files; make_date alone cannot, so every scan read the whole table.
+    partition_filter: >-
+      timestamp >= TIMESTAMP '{start} 00:00:00' - INTERVAL 1 DAY
+      AND timestamp < TIMESTAMP '{end} 00:00:00' + INTERVAL 2 DAYS
+      AND {date_col} BETWEEN DATE '{start}' AND DATE '{end}'
   interactions:
     table: pnr_prod.silver.news_interactions
     date_col: event_date
