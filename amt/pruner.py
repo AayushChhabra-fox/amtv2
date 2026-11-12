@@ -148,7 +148,7 @@ def decide(
     n_resamples: int = 1000,
     seed: int = 0,
 ) -> RungDecision:
-    """Apply hard kills, the rung floor, dominance, halving, and R3 promotion.
+    """Apply hard kills, the rung floor, and from R2 dominance, halving, and promotion.
 
     ``rung`` is ``R0`` through ``R3``. ``runs`` are the candidate seeds.
     ``baseline_runs`` are the same-rung LightGBM reference and any ``ref.*``
@@ -191,13 +191,15 @@ def decide(
         alive.append(summary)
 
     dominated: dict[str, NodeDecision] = {}
-    if rung in _SEARCH_RUNGS:
+    # R1 only drops hard failures and models that are clearly worse than the
+    # same-rung baseline. A small sample should not halve or dominate.
+    if rung in {"R2", "R3"}:
         dominated = _dominance_kills(alive, n_resamples=n_resamples, seed=seed)
         alive = [node for node in alive if node.node_id not in dominated]
 
     diversity_slot: str | None = None
     promoted: list[str] = []
-    if rung in _SEARCH_RUNGS:
+    if rung in {"R2", "R3"}:
         kept, diversity_slot = _halve(alive, rung)
         if rung == "R3":
             promoted = _promote(kept)
@@ -804,7 +806,7 @@ def _halve(nodes: Sequence[_Summary], rung: str) -> tuple[list[_Summary], str | 
     kept = list(ordered[:keep_n])
     cut = list(ordered[keep_n:])
     slot: str | None = None
-    if rung == "R1" and cut:
+    if rung == "R2" and cut:
         kept_families = {node.family for node in kept}
         wiped = [node for node in cut if node.family not in kept_families]
         if wiped:

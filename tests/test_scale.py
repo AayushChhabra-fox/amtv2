@@ -197,16 +197,26 @@ def test_calibration_is_one_lineage_and_is_not_repeated(
 
 
 def _improve(parent: str, node_ids: list[str]) -> list[dict]:
-    candidates = [
-        _candidate(
-            node_id,
-            "improve",
-            parent=parent,
-            change=f"change {node_id}",
-            claim=f"improve {node_id}",
+    return _improve_many([(parent, node_ids)])
+
+
+def _improve_many(groups: list[tuple[str, list[str]]]) -> list[dict]:
+    candidates = []
+    node_ids: list[str] = []
+    kept: list[str] = []
+    for parent, children in groups:
+        node_ids.extend(children)
+        kept.extend(children[:2])
+        candidates.extend(
+            _candidate(
+                node_id,
+                "improve",
+                parent=parent,
+                change=f"change {node_id}",
+                claim=f"improve {node_id}",
+            )
+            for node_id in children
         )
-        for node_id in node_ids
-    ]
     calls: list[dict] = [
         {
             "role": "planner",
@@ -215,7 +225,6 @@ def _improve(parent: str, node_ids: list[str]) -> list[dict]:
         },
         {"role": "critic", "output": {"verdicts": [_pass(node_id) for node_id in node_ids]}},
     ]
-    kept = node_ids[:2]
     calls.extend({"role": "implementer", "node_id": node_id} for node_id in kept)
     calls.extend({"role": "reviewer", "node_id": node_id} for node_id in kept)
     return calls
@@ -244,7 +253,10 @@ def _small_script(tmp_path: Path) -> None:
     ]
     calls.extend({"role": "implementer", "node_id": node_id} for node_id, _family in kept)
     calls.extend({"role": "reviewer", "node_id": node_id} for node_id, _family in kept)
-    calls.extend(_improve("a00", ["a10", "a11", "a12"]))
+    # R1 no longer halves, so R3 still has the top two lineages. Each needs 3 proposals.
+    calls.extend(
+        _improve_many([("a00", ["a10", "a11", "a12"]), ("a01", ["a13", "a14", "a15"])])
+    )
     calls.extend(_improve("a10", ["a20", "a21", "a22"]))
     calls.extend(
         [
@@ -337,7 +349,7 @@ def test_k4_unattended_run_records_stats_and_opens_phase2(
     entry = (tmp_path / "runs" / "full-entry" / "phase2_entry.md").read_text(encoding="utf-8")
     assert "does not start training" in entry
     assert "bug rate" in entry
-    assert FakeJobs(tmp_path).submit_count() == before + 19
+    assert FakeJobs(tmp_path).submit_count() == before + 24
     assert main(["gates", "--root", str(tmp_path), "--brief", str(brief)]) == 0
     assert "full budget ready" in capsys.readouterr().out
     assert main(["stats", "--root", str(tmp_path), "--run-id", "small"]) == 0

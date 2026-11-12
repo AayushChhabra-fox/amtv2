@@ -239,18 +239,25 @@ def test_paired_dominance_fires_when_marginal_intervals_overlap() -> None:
     """Wide marginal CIs do not dominate. The same gap, paired by query, does."""
 
     brief = _brief()
-    baseline = [_baseline()]
+    baseline = [_baseline("R2")]
     shared = dict(lo=-0.10, hi=0.10)
-    weak = _run("a", point=0.0, dbu=2, latency_p95_ms=15, family="trees", **shared)
-    strong = _run("b", point=0.03, dbu=1, latency_p95_ms=10, family="linear", **shared)
-    other = _run("c", point=-0.01, dbu=1, latency_p95_ms=8, family="neural", **shared)
-    without = decide("R1", [weak, strong, other], baseline, brief)
+    weak = _run("a", point=0.0, dbu=2, latency_p95_ms=15, family="trees", rung="R2", **shared)
+    strong = _run("b", point=0.03, dbu=1, latency_p95_ms=10, family="linear", rung="R2", **shared)
+    other = _run("c", point=-0.01, dbu=1, latency_p95_ms=8, family="neural", rung="R2", **shared)
+    without = decide("R2", [weak, strong, other], baseline, brief)
     assert _by_id(without)["a"].rule == "survive"
 
-    weak_q = weak.model_copy(update={"query_deltas": _queries(0.0)})
-    strong_q = strong.model_copy(update={"query_deltas": _queries(0.03)})
-    other_q = other.model_copy(update={"query_deltas": _queries(-0.01)})
-    paired = decide("R1", [weak_q, strong_q, other_q], baseline, brief)
+    weak_q = weak.model_copy(update={"query_deltas": _queries(0.0), "rung": "R2"})
+    strong_q = strong.model_copy(update={"query_deltas": _queries(0.03), "rung": "R2"})
+    other_q = other.model_copy(update={"query_deltas": _queries(-0.01), "rung": "R2"})
+    at_r1 = decide(
+        "R1",
+        [item.model_copy(update={"rung": "R1"}) for item in (weak_q, strong_q, other_q)],
+        [_baseline("R1")],
+        brief,
+    )
+    assert _by_id(at_r1)["a"].rule == "survive"
+    paired = decide("R2", [weak_q, strong_q, other_q], [_baseline("R2")], brief)
     assert _by_id(paired)["a"].rule == "dominance"
     assert "b" in _by_id(paired)["a"].kill_reason
     assert "b" in paired.survivors
@@ -258,9 +265,17 @@ def test_paired_dominance_fires_when_marginal_intervals_overlap() -> None:
 
 def test_dominance_requires_cost_no_higher_and_ignores_a_tie() -> None:
     brief = _brief()
-    baseline = [_baseline()]
+    baseline = [_baseline("R2")]
     shared = dict(lo=-0.10, hi=0.10)
-    weak = _run("a", point=0.0, dbu=2, latency_p95_ms=15, query_deltas=_queries(0.0), **shared)
+    weak = _run(
+        "a",
+        point=0.0,
+        dbu=2,
+        latency_p95_ms=15,
+        query_deltas=_queries(0.0),
+        rung="R2",
+        **shared,
+    )
     expensive = _run(
         "b",
         point=0.03,
@@ -268,6 +283,7 @@ def test_dominance_requires_cost_no_higher_and_ignores_a_tie() -> None:
         latency_p95_ms=30,
         family="linear",
         query_deltas=_queries(0.03),
+        rung="R2",
         **shared,
     )
     other = _run(
@@ -277,17 +293,26 @@ def test_dominance_requires_cost_no_higher_and_ignores_a_tie() -> None:
         latency_p95_ms=8,
         family="neural",
         query_deltas=_queries(-0.01),
+        rung="R2",
         **shared,
     )
-    decision = decide("R1", [weak, expensive, other], baseline, brief)
+    decision = decide("R2", [weak, expensive, other], baseline, brief)
     assert _by_id(decision)["a"].rule != "dominance"
     assert "a" in decision.survivors
 
     tied = [
-        _run(name, point=0.02, lo=0.02, hi=0.02, query_deltas=_queries(0.02), family="trees")
+        _run(
+            name,
+            point=0.02,
+            lo=0.02,
+            hi=0.02,
+            query_deltas=_queries(0.02),
+            family="trees",
+            rung="R2",
+        )
         for name in ("a", "b")
     ]
-    tie = decide("R1", tied, baseline, brief)
+    tie = decide("R2", tied, baseline, brief)
     assert all(item.rule != "dominance" for item in tie.decisions)
 
 
@@ -302,7 +327,7 @@ def test_halving_tie_break_keeps_ceil_half_by_node_id() -> None:
     assert decision.diversity_slot is None
 
 
-def test_r1_diversity_slot_keeps_one_wiped_family() -> None:
+def test_r1_keeps_nodes_that_are_only_slightly_behind() -> None:
     wide = dict(lo=-0.05, hi=0.10, rung="R1")
     runs = [
         _run("aa", point=0.05, family="boost", **wide),
@@ -311,16 +336,30 @@ def test_r1_diversity_slot_keeps_one_wiped_family() -> None:
         _run("c", point=0.01, family="linear", **wide),
     ]
     decision = decide("R1", runs, [_baseline()], _brief())
+    assert decision.diversity_slot is None
+    assert decision.survivors == ["aa", "ab", "b", "c"]
+    assert all(_by_id(decision)[run.node_id].rule == "survive" for run in runs)
+
+
+def test_r2_diversity_slot_keeps_one_wiped_family() -> None:
+    wide = dict(lo=-0.05, hi=0.10, rung="R2")
+    runs = [
+        _run("aa", point=0.05, family="boost", **wide),
+        _run("ab", point=0.04, family="boost", **wide),
+        _run("b", point=0.02, family="neural", **wide),
+        _run("c", point=0.01, family="linear", **wide),
+    ]
+    decision = decide("R2", runs, [_baseline("R2")], _brief())
     assert decision.diversity_slot == "b"
     assert decision.survivors == ["aa", "ab", "b"]
     assert _by_id(decision)["b"].rule == "diversity"
     assert _by_id(decision)["b"].status == "kept"
     assert _by_id(decision)["c"].rule == "halving"
 
-    at_r2 = [run.model_copy(update={"rung": "R2"}) for run in runs]
-    later = decide("R2", at_r2, [_baseline("R2")], _brief())
+    at_r3 = [run.model_copy(update={"rung": "R3"}) for run in runs]
+    later = decide("R3", at_r3, [_baseline("R3")], _brief())
     assert later.diversity_slot is None
-    assert later.survivors == ["aa", "ab"]
+    assert "b" not in later.survivors
     assert _by_id(later)["b"].rule == "halving"
 
 
