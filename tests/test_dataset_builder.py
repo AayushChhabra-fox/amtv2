@@ -339,6 +339,113 @@ def test_nfy_specs_render_without_harness_edits() -> None:
     assert article_sql == clip_sql
 
 
+class _Row(dict):
+    def asDict(self, recursive: bool = False) -> dict:
+        return dict(self)
+
+
+class _Result:
+    def __init__(self, rows: list[dict]) -> None:
+        self._rows = [_Row(row) for row in rows]
+
+    def collect(self) -> list[_Row]:
+        return self._rows
+
+
+class _Writer:
+    def mode(self, _mode: str) -> _Writer:
+        return self
+
+    def saveAsTable(self, _name: str) -> None:
+        return None
+
+
+class _Frame:
+    columns = [
+        "query_id",
+        "item_id",
+        "query_ts",
+        "label",
+        "label_event_ts",
+        "click",
+        "total_score",
+        "item_age_seconds",
+        "profile_version_ts",
+        "published_ts",
+        "popularity_window_end",
+        "value",
+    ]
+    write = _Writer()
+
+
+class _RecordingSpark:
+    """Records every SQL statement and returns empty or minimal summary rows."""
+
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    def sql(self, text: str) -> _Result:
+        self.statements.append(text)
+        if "count(*) AS rows" in text:
+            return _Result([{"rows": 4, "queries": 2, "min_query_ts": None, "max_query_ts": None,
+                             "min_day": None, "max_day": None}])
+        if "AS content_hash" in text:
+            return _Result([{"content_hash": "h"}])
+        if "avg(n) AS mean_n" in text:
+            return _Result([{"mean_n": 2.0}])
+        return _Result([])
+
+    def table(self, _name: str) -> _Frame:
+        return _Frame()
+
+    def createDataFrame(self, _rows, _columns) -> _Frame:
+        return _Frame()
+
+
+def test_spark_build_scans_sources_once_and_stages_fragments(tmp_path: Path) -> None:
+    from harness.data.build_dataset import build_spark
+
+    spec = load_spec(ROOT / "datasets" / "nfy_article_rerank_demo").model_copy(
+        update={"checks": []}
+    )
+    spark = _RecordingSpark()
+    build_spark(spec, spark, catalog="cat", schema="sch", output_dir=tmp_path)
+    statements = spark.statements
+    prefix = f"`cat`.`sch`.`{spec.name}"
+
+    source_views = [s for s in statements if s.startswith("CREATE OR REPLACE TEMP VIEW amt_src_")]
+    assert len(source_views) == len(spec.sources)
+    requests = next(s for s in source_views if "amt_src_requests " in s)
+    assert "BETWEEN DATE '2026-09-24' AND DATE '2026-10-17'" in requests
+
+    fragments = ["queries", "candidates", "labels", *spec.feature_groups]
+    for name in fragments:
+        staged = f"CREATE OR REPLACE TABLE {prefix}_stage_{name}` AS SELECT * FROM amt_frag_{name}"
+        assert statements.count(staged) == 1
+
+    first_check = next(i for i, s in enumerate(statements) if "LIMIT 5" in s)
+    repointed = [
+        i
+        for i, s in enumerate(statements)
+        if s.startswith("CREATE OR REPLACE TEMP VIEW amt_frag_") and "_stage_" in s
+    ]
+    assert len(repointed) == len(fragments)
+    assert max(repointed) < first_check
+
+    split_writes = [
+        s
+        for s in statements
+        if s.startswith(f"CREATE OR REPLACE TABLE {prefix}_")
+        and "_stage_" not in s.split(" AS ", 1)[0]
+    ]
+    assert len(split_writes) == 4
+    assert all(f"FROM {prefix}_stage_assembled`" in s for s in split_writes)
+    assert not any("amt_frag_" in s or "amt_src_" in s for s in split_writes)
+
+    dropped = [s for s in statements if s.startswith("DROP TABLE IF EXISTS")]
+    assert len(dropped) == len(fragments) + 1
+
+
 def test_overlapping_windows_rejected(tmp_path: Path) -> None:
     source = ROOT / "datasets" / "nfy_article_rerank"
     dest = tmp_path / "overlap"

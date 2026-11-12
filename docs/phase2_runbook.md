@@ -46,6 +46,8 @@ uv run amt dataset build --spec datasets/nfy_article_rerank --wait
 
 The manifest is written to the artifact volume. Copy it down before `amt sign g1`, which hashes a local file.
 
+The builder scans the sources once over the full date span, materializes each SQL fragment as `<dataset>_stage_<fragment>` in the output schema, runs every contract check against those copies, then writes each split from one `<dataset>_stage_assembled` table. A successful build drops the staging tables. A failed build leaves them, so the failing fragment can be queried directly.
+
 ```bash
 databricks fs cp \
   dbfs:/Volumes/product_api_dev/amt/amt_artifacts/nfy_article_rerank/manifest.json \

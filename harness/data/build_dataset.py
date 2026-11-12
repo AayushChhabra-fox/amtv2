@@ -139,6 +139,9 @@ class SparkExecutor:
     def write_table(self, table: str, select_sql: str) -> None:
         self.spark.sql(f"CREATE OR REPLACE TABLE {table} AS {select_sql}")
 
+    def drop_table(self, table: str) -> None:
+        self.spark.sql(f"DROP TABLE IF EXISTS {table}")
+
 
 def restrict_to_split(rows: list[dict], spec: DatasetSpec, split_name: str) -> list[dict]:
     kept = []
@@ -303,6 +306,26 @@ def _table_name(catalog: str, schema: str, dataset: str, split: str) -> str:
     return ".".join(f"`{part}`" for part in parts)
 
 
+def _full_span(spec: DatasetSpec) -> tuple[date, date]:
+    """First and last day across all splits. Gap days are dropped by the split filter."""
+
+    ranges = spec.split_ranges()
+    return min(start for _, start, _ in ranges), max(end for _, _, end in ranges)
+
+
+def _stage(
+    executor: SparkExecutor,
+    catalog: str,
+    schema: str,
+    spec: DatasetSpec,
+    name: str,
+    select_sql: str,
+) -> str:
+    table = _table_name(catalog, schema, spec.name, f"stage_{name}")
+    executor.write_table(table, select_sql)
+    return table
+
+
 def _spark_hash(executor: SparkExecutor, table: str) -> str:
     rows = executor.execute(
         "SELECT sha2(cast(sum(xxhash64(query_id, item_id, cast(label AS STRING))) AS STRING), 256) "
@@ -336,28 +359,40 @@ def build_spark(
     executor = SparkExecutor(spark)
     column_sets: dict[str, list[str]] = {}
     written: dict[str, str] = {}
+    staged: list[str] = []
+    span_start, span_end = _full_span(spec)
+    _prepare_sources(executor, spec, span_start, span_end)
+    fragments = fragment_selects(spec, render_params(spec, span_start, span_end))
+    for name, sql in fragments:
+        view = f"amt_frag_{name}"
+        executor.replace_view(view, sql)
+        for column in executor.columns(view):
+            pattern = forbidden_hit(column, spec.forbidden_columns)
+            if pattern is not None:
+                raise DatasetBuildError(
+                    "forbidden_column",
+                    f"{name} contains forbidden column {column}",
+                    [{"column": column, "pattern": pattern, "fragment": name}],
+                )
+    # Temp views are recomputed from the sources on every query, so each
+    # fragment is materialized once and every later query reads the copy.
+    for name, _sql in fragments:
+        view = f"amt_frag_{name}"
+        table = _stage(executor, catalog, schema, spec, name, f"SELECT * FROM {view}")
+        staged.append(table)
+        executor.replace_view(view, f"SELECT * FROM {table}")
+        column_sets[name] = executor.columns(view)
+    for kind, sql in violation_sqls(spec, column_sets):
+        examples = executor.execute(sql)
+        if examples:
+            raise DatasetBuildError(kind, "contract violation", examples)
+    assembled = _stage(
+        executor, catalog, schema, spec, "assembled", assemble_select_sql(spec, column_sets)
+    )
+    staged.append(assembled)
+    assembled_sql = f"SELECT * FROM {assembled}"
     for split_name, start, end in spec.split_ranges():
-        _prepare_sources(executor, spec, start, end)
-        params = render_params(spec, start, end)
-        for name, sql in fragment_selects(spec, params):
-            view = f"amt_frag_{name}"
-            executor.replace_view(view, sql)
-            column_sets[name] = executor.columns(view)
-            for column in column_sets[name]:
-                pattern = forbidden_hit(column, spec.forbidden_columns)
-                if pattern is not None:
-                    raise DatasetBuildError(
-                        "forbidden_column",
-                        f"{name} contains forbidden column {column}",
-                        [{"column": column, "pattern": pattern, "fragment": name}],
-                    )
-        for kind, sql in violation_sqls(spec, column_sets):
-            examples = executor.execute(sql)
-            if examples:
-                raise DatasetBuildError(kind, "contract violation", examples)
-        select_sql = assemble_select_sql(spec, column_sets)
-        filtered = filtered_sql(select_sql, spec, start, end)
-        bounds = candidate_bounds_sql(spec, select_sql, start, end)
+        bounds = candidate_bounds_sql(spec, assembled_sql, start, end)
         if bounds:
             examples = executor.execute(bounds)
             if examples:
@@ -367,7 +402,7 @@ def build_spark(
                     examples,
                 )
         table = _table_name(catalog, schema, spec.name, split_name)
-        executor.write_table(table, filtered)
+        executor.write_table(table, filtered_sql(assembled_sql, spec, start, end))
         written[split_name] = table
 
     summaries = {}
@@ -484,6 +519,8 @@ def build_spark(
     spark.createDataFrame([(text,)], ["manifest"]).write.mode("overwrite").saveAsTable(
         manifest_table.replace("`", "")
     )
+    for table in staged:
+        executor.drop_table(table)
     return manifest
 
 
