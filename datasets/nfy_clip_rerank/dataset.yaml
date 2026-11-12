@@ -1,0 +1,9 @@
+# Second surface, present so the repo layout matches the plan. The builder
+# proof that this spec trains without harness edits is Phase 1 M2.
+name: nfy_clip_rerank
+task_type: ranking
+entity_type: clip
+sources:
+  requests: pnr_prod.silver.nfy_reco_requests
+  impressions: pnr_prod.silver.news_impressions
+  interactions: pnr_prod.silver.news_interactions

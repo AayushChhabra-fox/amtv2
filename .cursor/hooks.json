@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "hooks": {
+    "subagentStart": [
+      {
+        "command": ".cursor/hooks/implementer_scope.py"
+      }
+    ],
+    "subagentStop": [
+      {
+        "command": ".cursor/hooks/implementer_scope.py"
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": ".cursor/hooks/implementer_scope.py",
+        "matcher": "Write|StrReplace|Delete|EditNotebook|ApplyPatch",
+        "failClosed": true
+      }
+    ],
+    "beforeShellExecution": [
+      {
+        "command": ".cursor/hooks/implementer_scope.py",
+        "failClosed": true
+      }
+    ]
+  }
+}

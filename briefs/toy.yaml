@@ -1,0 +1,28 @@
+name: toy
+run_id: toy
+approval_mode: none
+dataset_spec: datasets/toy
+problem:
+  surface: toy logistic skeleton
+  metric:
+    name: ndcg@10_graded
+task:
+  query_unit: one synthetic query
+  candidates: two classes of points
+  forbidden: [holdout labels]
+min_effect: 0.01
+budget:
+  total_dbu: 10
+  max_concurrent_jobs: 1
+efficiency:
+  train_dbu_per_candidate: 1
+  wall_clock_per_rung:
+    R0: 10m
+candidate:
+  id: c00
+  family: linear
+  rung: R0
+  seed: 0
+  batch: toy
+  claim: logistic regression on separable toy features
+  est_dbu: 0.1

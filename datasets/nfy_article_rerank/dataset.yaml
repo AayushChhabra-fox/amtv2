@@ -1,0 +1,38 @@
+# Phase 0 record of the confirmed NFY sources. The executable spec (SQL
+# fragments, splits, sampling) is Phase 1 M2.
+name: nfy_article_rerank
+task_type: ranking
+sources:
+  requests: pnr_prod.silver.nfy_reco_requests
+  candidates: pnr_prod.silver.nfy_reco_candidates
+  impressions: pnr_prod.silver.news_impressions
+  interactions: pnr_prod.silver.news_interactions
+  profiles: pnr_prod.silver.nfy_user_profile_versions
+  articles: pnr_prod.bronze.news_article_feature
+profile_join:
+  # 120/120 article requests sampled on 2026-11-10 matched a profile version.
+  # The join did not fan out, so each (user_profile_key, profile_content_hash)
+  # hit one version row in this sample.
+  keys: [user_profile_key, profile_content_hash]
+  sample: 120/120 on 2026-11-10
+embeddings:
+  # Article vectors, one row per article. Join candidates and interactions on
+  # entity_id. pnr_prod.bronze.news_article_feature calls that same article key id.
+  # news_interactions.context_embedding_3072 repeats the column name; this table
+  # is the source. 30251/30251 rows have the vector. 293/300 interaction
+  # entity_ids on 2026-11-10 matched.
+  table: product_api_prod.news_for_you.news_candidates_feature
+  column: context_embedding_3072
+  join: entity_id
+  thumbnail: emb_thumbnail_3072
+impressions:
+  # 4000-row sample: 3990 already latest_impression_rn=1, 9 at 2, 1 at 3.
+  dedupe: latest_impression_rn = 1
+labels:
+  # news_interactions has event_date and dwell_time_seconds, and no event
+  # timestamp. dwell_time_seconds is time-on-page, not delay after the request.
+  # The label cannot be placed more finely than the calendar day, so the window
+  # stays 24h.
+  label_window: 24h
+  label_window_status: date_grain
+primary_metric: ndcg@10_graded

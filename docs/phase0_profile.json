@@ -1,0 +1,678 @@
+{
+  "day": "2026-11-10",
+  "queries": [
+    {
+      "label": "columns",
+      "ok": true,
+      "n": 219
+    },
+    {
+      "label": "detail_news_interactions",
+      "ok": true,
+      "n": 1
+    },
+    {
+      "label": "detail_news_impressions",
+      "ok": true,
+      "n": 1
+    },
+    {
+      "label": "detail_nfy_reco_requests",
+      "ok": true,
+      "n": 1
+    },
+    {
+      "label": "detail_nfy_user_profile_versions",
+      "ok": true,
+      "n": 1
+    },
+    {
+      "label": "system_compute_tables",
+      "ok": true,
+      "n": 7
+    },
+    {
+      "label": "gpu_node_types",
+      "ok": true,
+      "n": 10
+    },
+    {
+      "label": "recent_node_types",
+      "ok": true,
+      "n": 25
+    }
+  ],
+  "column_counts": {
+    "news_impressions": 98,
+    "news_interactions": 47,
+    "nfy_reco_requests": 35,
+    "nfy_user_profile_versions": 39
+  },
+  "interesting_columns": {
+    "news_impressions": [
+      {
+        "name": "timestamp",
+        "type": "TIMESTAMP",
+        "comment": null
+      },
+      {
+        "name": "heap_session_id",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "session_id",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "xid",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "page_id",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "page_layout_type",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "page_type",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "collection_page_number",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "entity_id",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "entity_type",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "entity_source",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "impression_action",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "player_session_id",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "last_xid",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "timezone",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "latest_impression_rn",
+        "type": "INT",
+        "comment": null
+      },
+      {
+        "name": "impression_clicked",
+        "type": "BOOLEAN",
+        "comment": null
+      },
+      {
+        "name": "etl_created_date",
+        "type": "TIMESTAMP",
+        "comment": null
+      },
+      {
+        "name": "etl_updated_date",
+        "type": "TIMESTAMP",
+        "comment": null
+      }
+    ],
+    "news_interactions": [
+      {
+        "name": "xid",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "session_id",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "heap_session_id",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "entity_id",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "event_date",
+        "type": "DATE",
+        "comment": null
+      },
+      {
+        "name": "dwell_time_seconds",
+        "type": "LONG",
+        "comment": null
+      },
+      {
+        "name": "approx_read_time_min",
+        "type": "LONG",
+        "comment": null
+      },
+      {
+        "name": "dwell_fraction",
+        "type": "DOUBLE",
+        "comment": null
+      },
+      {
+        "name": "read_quality",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "sentiment",
+        "type": "FLOAT",
+        "comment": null
+      },
+      {
+        "name": "entity_source",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "page_type",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "timezone",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "context_embedding_3072",
+        "type": "ARRAY",
+        "comment": null
+      },
+      {
+        "name": "etl_updated_at",
+        "type": "TIMESTAMP",
+        "comment": null
+      }
+    ],
+    "nfy_reco_requests": [
+      {
+        "name": "request_id",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "request_ts",
+        "type": "TIMESTAMP",
+        "comment": null
+      },
+      {
+        "name": "event_date",
+        "type": "DATE",
+        "comment": null
+      },
+      {
+        "name": "entity_type",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "xid",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "identity_key",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "request_path",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "user_profile_key",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "profile_content_hash",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "candidates_raw",
+        "type": "INT",
+        "comment": null
+      },
+      {
+        "name": "candidates_scored",
+        "type": "INT",
+        "comment": null
+      },
+      {
+        "name": "candidates_after_dedup",
+        "type": "INT",
+        "comment": null
+      },
+      {
+        "name": "payload_hash",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "etl_created_date",
+        "type": "TIMESTAMP",
+        "comment": null
+      },
+      {
+        "name": "etl_updated_date",
+        "type": "TIMESTAMP",
+        "comment": null
+      }
+    ],
+    "nfy_user_profile_versions": [
+      {
+        "name": "user_profile_key",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "identity_key",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "profile_content_hash",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "xid",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "recent_embedding_dim",
+        "type": "INT",
+        "comment": null
+      },
+      {
+        "name": "overall_embedding_dim",
+        "type": "INT",
+        "comment": null
+      },
+      {
+        "name": "user_most_read_story_last10",
+        "type": "STRING",
+        "comment": null
+      },
+      {
+        "name": "n_requests",
+        "type": "LONG",
+        "comment": null
+      },
+      {
+        "name": "etl_created_date",
+        "type": "TIMESTAMP",
+        "comment": null
+      },
+      {
+        "name": "etl_updated_date",
+        "type": "TIMESTAMP",
+        "comment": null
+      }
+    ]
+  },
+  "partitions": {
+    "news_interactions": {
+      "format": "delta",
+      "name": "pnr_prod.silver.news_interactions",
+      "partitionColumns": "[]",
+      "numFiles": "30509"
+    },
+    "news_impressions": {
+      "format": "delta",
+      "name": "pnr_prod.silver.news_impressions",
+      "partitionColumns": "[]",
+      "numFiles": "17838"
+    },
+    "nfy_reco_requests": {
+      "format": "delta",
+      "name": "pnr_prod.silver.nfy_reco_requests",
+      "partitionColumns": "[]",
+      "numFiles": "2965"
+    },
+    "nfy_user_profile_versions": {
+      "format": "delta",
+      "name": "pnr_prod.silver.nfy_user_profile_versions",
+      "partitionColumns": "[]",
+      "numFiles": "1630"
+    }
+  },
+  "system_compute_tables": [
+    {
+      "database": "compute",
+      "tableName": "clusters",
+      "isTemporary": "false"
+    },
+    {
+      "database": "compute",
+      "tableName": "instance_events",
+      "isTemporary": "false"
+    },
+    {
+      "database": "compute",
+      "tableName": "instance_pools",
+      "isTemporary": "false"
+    },
+    {
+      "database": "compute",
+      "tableName": "node_timeline",
+      "isTemporary": "false"
+    },
+    {
+      "database": "compute",
+      "tableName": "node_types",
+      "isTemporary": "false"
+    },
+    {
+      "database": "compute",
+      "tableName": "warehouse_events",
+      "isTemporary": "false"
+    },
+    {
+      "database": "compute",
+      "tableName": "warehouses",
+      "isTemporary": "false"
+    }
+  ],
+  "gpu_node_types": [
+    {
+      "driver_node_type": "g5.4xlarge",
+      "worker_node_type": "g5.4xlarge",
+      "policy_id": null,
+      "n": "65"
+    },
+    {
+      "driver_node_type": "g5.8xlarge",
+      "worker_node_type": "g5.8xlarge",
+      "policy_id": null,
+      "n": "49"
+    },
+    {
+      "driver_node_type": "g5.16xlarge",
+      "worker_node_type": "g5.16xlarge",
+      "policy_id": null,
+      "n": "12"
+    },
+    {
+      "driver_node_type": "g6.8xlarge",
+      "worker_node_type": "g6.8xlarge",
+      "policy_id": null,
+      "n": "4"
+    },
+    {
+      "driver_node_type": "g6e.2xlarge",
+      "worker_node_type": "g6e.2xlarge",
+      "policy_id": null,
+      "n": "4"
+    },
+    {
+      "driver_node_type": "g4dn.xlarge",
+      "worker_node_type": "g4dn.xlarge",
+      "policy_id": null,
+      "n": "4"
+    },
+    {
+      "driver_node_type": "g4dn.4xlarge",
+      "worker_node_type": "g4dn.4xlarge",
+      "policy_id": null,
+      "n": "3"
+    },
+    {
+      "driver_node_type": "g4dn.xlarge",
+      "worker_node_type": "g4dn.xlarge",
+      "policy_id": "001B565B9F133E26",
+      "n": "2"
+    },
+    {
+      "driver_node_type": "g5.xlarge",
+      "worker_node_type": "g5.xlarge",
+      "policy_id": null,
+      "n": "2"
+    },
+    {
+      "driver_node_type": "g4dn.8xlarge",
+      "worker_node_type": "g4dn.8xlarge",
+      "policy_id": null,
+      "n": "1"
+    }
+  ],
+  "recent_node_types": [
+    {
+      "driver_node_type": "m5d.2xlarge",
+      "worker_node_type": "m5d.2xlarge",
+      "policy_id": null,
+      "n": "14197"
+    },
+    {
+      "driver_node_type": "i3.2xlarge",
+      "worker_node_type": "i3.2xlarge",
+      "policy_id": null,
+      "n": "8235"
+    },
+    {
+      "driver_node_type": "r5d.2xlarge",
+      "worker_node_type": "r5d.2xlarge",
+      "policy_id": null,
+      "n": "4243"
+    },
+    {
+      "driver_node_type": "m7gd.4xlarge",
+      "worker_node_type": "m7gd.4xlarge",
+      "policy_id": null,
+      "n": "2842"
+    },
+    {
+      "driver_node_type": "rd-fleet.xlarge",
+      "worker_node_type": "rd-fleet.xlarge",
+      "policy_id": null,
+      "n": "2635"
+    },
+    {
+      "driver_node_type": "r7gd.large",
+      "worker_node_type": "r7gd.large",
+      "policy_id": null,
+      "n": "2179"
+    },
+    {
+      "driver_node_type": "m5d.4xlarge",
+      "worker_node_type": "m5d.4xlarge",
+      "policy_id": null,
+      "n": "1992"
+    },
+    {
+      "driver_node_type": "c6i.4xlarge",
+      "worker_node_type": "c6i.4xlarge",
+      "policy_id": null,
+      "n": "1772"
+    },
+    {
+      "driver_node_type": "m7gd.2xlarge",
+      "worker_node_type": "m7gd.2xlarge",
+      "policy_id": null,
+      "n": "1376"
+    },
+    {
+      "driver_node_type": "m7gd.8xlarge",
+      "worker_node_type": "m7gd.8xlarge",
+      "policy_id": null,
+      "n": "1111"
+    },
+    {
+      "driver_node_type": "r7gd.2xlarge",
+      "worker_node_type": "r7gd.2xlarge",
+      "policy_id": null,
+      "n": "1005"
+    },
+    {
+      "driver_node_type": "r5d.xlarge",
+      "worker_node_type": "r5d.xlarge",
+      "policy_id": null,
+      "n": "762"
+    },
+    {
+      "driver_node_type": "r7gd.4xlarge",
+      "worker_node_type": "r7gd.4xlarge",
+      "policy_id": null,
+      "n": "645"
+    },
+    {
+      "driver_node_type": "c5.2xlarge",
+      "worker_node_type": "c5.2xlarge",
+      "policy_id": null,
+      "n": "624"
+    },
+    {
+      "driver_node_type": "r5d.xlarge",
+      "worker_node_type": "r5d.2xlarge",
+      "policy_id": null,
+      "n": "322"
+    },
+    {
+      "driver_node_type": "r5d.xlarge",
+      "worker_node_type": "r5d.large",
+      "policy_id": null,
+      "n": "126"
+    },
+    {
+      "driver_node_type": "rd-fleet.2xlarge",
+      "worker_node_type": "rd-fleet.2xlarge",
+      "policy_id": null,
+      "n": "71"
+    },
+    {
+      "driver_node_type": "r7gd.xlarge",
+      "worker_node_type": "r7gd.xlarge",
+      "policy_id": null,
+      "n": "61"
+    },
+    {
+      "driver_node_type": "i3.2xlarge",
+      "worker_node_type": "i3.xlarge",
+      "policy_id": null,
+      "n": "52"
+    },
+    {
+      "driver_node_type": "m5a.large",
+      "worker_node_type": "m5a.large",
+      "policy_id": null,
+      "n": "40"
+    },
+    {
+      "driver_node_type": "m5d.8xlarge",
+      "worker_node_type": "m5d.8xlarge",
+      "policy_id": null,
+      "n": "35"
+    },
+    {
+      "driver_node_type": "rd-fleet.xlarge",
+      "worker_node_type": "rd-fleet.2xlarge",
+      "policy_id": null,
+      "n": "33"
+    },
+    {
+      "driver_node_type": "r8id.4xlarge",
+      "worker_node_type": "r8id.4xlarge",
+      "policy_id": null,
+      "n": "21"
+    },
+    {
+      "driver_node_type": "i3.xlarge",
+      "worker_node_type": "i3.xlarge",
+      "policy_id": null,
+      "n": "19"
+    },
+    {
+      "driver_node_type": "r5d.8xlarge",
+      "worker_node_type": "r5d.8xlarge",
+      "policy_id": null,
+      "n": "16"
+    }
+  ],
+  "chosen_partitions": {
+    "news_interactions": "event_date",
+    "news_impressions": null,
+    "nfy_reco_requests": "event_date"
+  },
+  "phase0_data": {
+    "embeddings": {
+      "table": "product_api_prod.news_for_you.news_candidates_feature",
+      "column": "context_embedding_3072",
+      "join": "entity_id",
+      "article_text_key": "pnr_prod.bronze.news_article_feature.id",
+      "rows": 30251,
+      "rows_with_embedding": 30251,
+      "rows_with_thumbnail": 22410,
+      "interaction_sample": {
+        "day": "2026-11-10",
+        "n": 300,
+        "matched": 293
+      },
+      "meaning": "Article embedding. The feature row is one article (publish_date, category, people, story_id). A 300-id left join returned 300 rows, so those entity_ids did not fan out."
+    },
+    "impressions": {
+      "dedupe": "latest_impression_rn = 1",
+      "sample_rows": 4000,
+      "rn_counts": {
+        "1": 3990,
+        "2": 9,
+        "3": 1
+      }
+    },
+    "profile_join": {
+      "keys": [
+        "user_profile_key",
+        "profile_content_hash"
+      ],
+      "day": "2026-11-10",
+      "sample_requests": 120,
+      "matched": 120
+    },
+    "label_window": {
+      "value": "24h",
+      "status": "date_grain",
+      "reason": "news_interactions has event_date and dwell_time_seconds and no event timestamp. dwell_time_seconds is time on page, not delay after the request."
+    }
+  }
+}

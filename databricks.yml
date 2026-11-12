@@ -1,0 +1,21 @@
+bundle:
+  name: amt
+
+include:
+  - resources/*.yml
+
+variables:
+  experiment_name:
+    description: MLflow experiment used by every AMT training run.
+    default: /Shared/amt/nfy_article_rerank
+  catalog:
+    default: product_api_dev
+  schema:
+    default: amt
+
+targets:
+  dev:
+    default: true
+    mode: development
+    workspace:
+      host: https://fox-product-eng-dev-nation.cloud.databricks.com

@@ -1,0 +1,253 @@
+"""Resumable toy loop: proposal, critic, logistic candidate, smoke, hello_train, pruner."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import time
+from pathlib import Path
+
+import yaml
+
+from amt.agents import run_role
+from amt.budget import BudgetExceeded, assert_can_spend
+from amt.jobs_backend import make_backend
+from amt.ledger import append, read_rows
+from amt.preflight import smoke_candidate
+from amt.pruner import ledger_row
+from amt.schemas import Brief, RunState
+
+
+def run_brief(
+    brief_path: Path,
+    *,
+    root: Path | None = None,
+    fresh: bool = False,
+    run_id: str | None = None,
+    approval_mode: str | None = None,
+) -> RunState:
+    root = root or Path.cwd()
+    brief = _load_brief(brief_path)
+    if approval_mode:
+        brief.approval_mode = approval_mode  # type: ignore[assignment]
+    resolved_id = run_id or brief.run_id or brief.name
+    state_path = root / "runs" / resolved_id / "state.json"
+    if fresh and state_path.is_file():
+        state_path.unlink()
+    if state_path.is_file():
+        state = _load_state(state_path)
+    else:
+        state = _new_state(brief, resolved_id, brief_path, root)
+    if state.stage in {"REPORT", "ESCALATE"}:
+        return state
+    backend = make_backend(root)
+    while state.stage not in {"REPORT", "ESCALATE"}:
+        if _stop_requested(root, state.run_id):
+            state.stop_requested = True
+            state.stage = "ESCALATE"
+            _save(state_path, state)
+            _write_escalate(root, state, "stop file present")
+            return state
+        finished = state.stage
+        state = _step(state, brief, root, backend)
+        _save(state_path, state)
+        if os.environ.get("AMT_STOP_AFTER") == finished:
+            return state
+    return state
+
+
+def _step(state: RunState, brief: Brief, root: Path, backend: object) -> RunState:
+    stage = state.stage
+    if stage == "PLAN":
+        run_role("planner", brief, root, state.run_id)
+        state.stage = "CRITIQUE"
+    elif stage == "CRITIQUE":
+        run_role("critic", brief, root, state.run_id)
+        state.stage = "IMPLEMENT"
+    elif stage == "IMPLEMENT":
+        run_role("implementer", brief, root, state.run_id)
+        state.stage = "SMOKE"
+    elif stage == "SMOKE":
+        smoke_candidate(root / "candidates" / state.candidate_id)
+        state.stage = "SUBMIT"
+    elif stage == "SUBMIT":
+        if _submit(state, brief, root, backend):
+            state.stage = "WAIT"
+        else:
+            state.stage = "ESCALATE"
+    elif stage == "WAIT":
+        _wait(state, root, backend)
+        state.stage = "PRUNE"
+    elif stage == "PRUNE":
+        _prune(state, brief, root, backend)
+        state.stage = "REPORT"
+        _write_digest(root, state)
+    else:
+        raise RuntimeError(f"unknown stage {stage}")
+    return state
+
+
+def _submit(state: RunState, brief: Brief, root: Path, backend: object) -> bool:
+    key = f"{state.candidate_id}/{state.rung}/{state.seed}"
+    record = dict(state.submitted_jobs.get(key) or {})
+    if record.get("job_run_id"):
+        state.submitted_jobs[key] = record
+        return True
+    estimate = float(brief.candidate.get("est_dbu", 0.1))
+    try:
+        assert_can_spend(brief, state.spent_dbu, estimate)
+    except BudgetExceeded as exc:
+        _write_escalate(root, state, str(exc))
+        return False
+    params = {
+        "candidate_id": state.candidate_id,
+        "rung": state.rung,
+        "seed": str(state.seed),
+        "batch": state.batch,
+        "family": state.family,
+        "git_sha": state.git_sha,
+        "dbu_est": str(estimate),
+        "amt_run_id": state.run_id,
+        "experiment_name": "/Shared/amt/nfy_article_rerank",
+    }
+    token = f"{state.run_id}:{key}"
+    job_run_id = backend.submit(job_key=key, params=params, idempotency_token=token)  # type: ignore[attr-defined]
+    record.update({"job_run_id": job_run_id, "submitted_at": time.time(), "dbu_est": estimate})
+    state.submitted_jobs[key] = record
+    return True
+
+
+def _wait(state: RunState, root: Path, backend: object) -> None:
+    del root
+    key = f"{state.candidate_id}/{state.rung}/{state.seed}"
+    record = state.submitted_jobs[key]
+    result = backend.wait(record["job_run_id"])  # type: ignore[attr-defined]
+    record["result_state"] = result.get("result_state")
+    record["finished_at"] = time.time()
+    if result.get("result_state") != "SUCCESS":
+        raise RuntimeError(f"hello_train ended {result}")
+    state.submitted_jobs[key] = record
+
+
+def _prune(state: RunState, brief: Brief, root: Path, backend: object) -> None:
+    key = f"{state.candidate_id}/{state.rung}/{state.seed}"
+    record = state.submitted_jobs[key]
+    found = backend.find_mlflow_run(  # type: ignore[attr-defined]
+        tags={
+            "candidate_id": state.candidate_id,
+            "rung": state.rung,
+            "seed": str(state.seed),
+        }
+    )
+    metric = None if found is None else found.get("metric")
+    mlflow_run_id = None if found is None else found.get("mlflow_run_id")
+    wall_min = None
+    if record.get("submitted_at") and record.get("finished_at"):
+        wall_min = round((record["finished_at"] - record["submitted_at"]) / 60, 3)
+    if not record.get("pruned"):
+        if not _ledger_has(root, state):
+            claim = str(brief.candidate.get("claim", "logistic regression"))
+            append(
+                root,
+                ledger_row(
+                    run_id=state.run_id,
+                    node_id=state.candidate_id,
+                    family=state.family,
+                    claim=claim,
+                    rung=state.rung,
+                    seed=state.seed,
+                    metric=float(metric) if metric is not None else None,
+                    dbu=float(record.get("dbu_est", 0.0)),
+                    wall_min=wall_min,
+                    git_sha=state.git_sha,
+                    mlflow_run_id=mlflow_run_id,
+                    job_run_id=record.get("job_run_id"),
+                ),
+            )
+            state.spent_dbu += float(record.get("dbu_est", 0.0))
+        record["pruned"] = True
+    record["mlflow_run_id"] = mlflow_run_id or record.get("mlflow_run_id")
+    state.submitted_jobs[key] = record
+
+
+def _ledger_has(root: Path, state: RunState) -> bool:
+    return any(
+        row.run_id == state.run_id
+        and row.node_id == state.candidate_id
+        and row.rung == state.rung
+        and row.seed == state.seed
+        for row in read_rows(root)
+    )
+
+
+def _load_brief(path: Path) -> Brief:
+    payload = yaml.safe_load(path.read_text())
+    return Brief.model_validate(payload)
+
+
+def _new_state(brief: Brief, run_id: str, brief_path: Path, root: Path) -> RunState:
+    candidate = brief.candidate or {}
+    return RunState(
+        run_id=run_id,
+        brief_path=str(brief_path),
+        stage="PLAN",
+        approval_mode=brief.approval_mode,
+        candidate_id=str(candidate.get("id", "c00")),
+        family=str(candidate.get("family", "linear")),
+        rung=str(candidate.get("rung", "R0")),
+        seed=int(candidate.get("seed", 0)),
+        batch=str(candidate.get("batch", "toy")),
+        git_sha=_git_sha(root),
+    )
+
+
+def _git_sha(root: Path) -> str:
+    override = os.environ.get("AMT_GIT_SHA")
+    if override:
+        return override
+    for candidate in (root, *root.parents):
+        if (candidate / ".git").exists():
+            completed = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=candidate,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if completed.returncode == 0:
+                return completed.stdout.strip()
+    return "unknown"
+
+
+def _load_state(path: Path) -> RunState:
+    return RunState.model_validate(json.loads(path.read_text()))
+
+
+def _save(path: Path, state: RunState) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(state.model_dump_json(indent=2) + "\n")
+    temporary.replace(path)
+
+
+def _stop_requested(root: Path, run_id: str) -> bool:
+    return (root / "runs" / run_id / "STOP").is_file()
+
+
+def _write_escalate(root: Path, state: RunState, reason: str) -> None:
+    path = root / "runs" / state.run_id / "ESCALATE.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"# Escalate\n\n{reason}\n")
+
+
+def _write_digest(root: Path, state: RunState) -> None:
+    path = root / "runs" / state.run_id / "round_0.md"
+    key = f"{state.candidate_id}/{state.rung}/{state.seed}"
+    record = state.submitted_jobs.get(key, {})
+    path.write_text(
+        "# Round 0\n\n"
+        f"Candidate `{state.candidate_id}` family `{state.family}` "
+        f"job `{record.get('job_run_id')}` mlflow `{record.get('mlflow_run_id')}`.\n\n"
+        f"Spent {state.spent_dbu} DBU (estimated).\n"
+    )

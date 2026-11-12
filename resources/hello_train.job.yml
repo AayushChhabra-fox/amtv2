@@ -1,0 +1,58 @@
+resources:
+  jobs:
+    hello_train:
+      name: amt_hello_train
+      timeout_seconds: 1800
+      max_concurrent_runs: 2
+      tags:
+        project: amt
+        component: hello_train
+      parameters:
+        - name: candidate_id
+          default: c00
+        - name: rung
+          default: R0
+        - name: seed
+          default: "0"
+        - name: batch
+          default: toy
+        - name: family
+          default: linear
+        - name: git_sha
+          default: unknown
+        - name: dbu_est
+          default: "0.1"
+        - name: amt_run_id
+          default: toy
+        - name: experiment_name
+          default: ${var.experiment_name}
+      tasks:
+        - task_key: hello_train
+          environment_key: amt_serverless
+          spark_python_task:
+            python_file: ../src/hello_train.py
+            parameters:
+              - --candidate_id
+              - "{{job.parameters.candidate_id}}"
+              - --rung
+              - "{{job.parameters.rung}}"
+              - --seed
+              - "{{job.parameters.seed}}"
+              - --batch
+              - "{{job.parameters.batch}}"
+              - --family
+              - "{{job.parameters.family}}"
+              - --git_sha
+              - "{{job.parameters.git_sha}}"
+              - --dbu_est
+              - "{{job.parameters.dbu_est}}"
+              - --amt_run_id
+              - "{{job.parameters.amt_run_id}}"
+              - --experiment_name
+              - "{{job.parameters.experiment_name}}"
+      environments:
+        - environment_key: amt_serverless
+          spec:
+            client: "4"
+            dependencies:
+              - mlflow
