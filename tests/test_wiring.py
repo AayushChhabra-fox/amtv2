@@ -201,6 +201,8 @@ def test_volume_calls_use_dbfs_uris(tmp_path: Path, monkeypatch) -> None:
         calls.append(list(args))
         if args[2] == "ls" and args[3].endswith("/missing"):
             return subprocess.CompletedProcess(args, 1, "", "Error: Path not found")
+        if args[2] == "ls" and args[3].endswith("/fresh"):
+            return subprocess.CompletedProcess(args, 1, "", "Error: no such directory: /x")
         if args[2] == "ls" and args[3].endswith("/denied"):
             return subprocess.CompletedProcess(args, 1, "", "required scopes: files")
         return subprocess.CompletedProcess(args, 0, "seed=0.parquet\nother/\n", "")
@@ -215,6 +217,7 @@ def test_volume_calls_use_dbfs_uris(tmp_path: Path, monkeypatch) -> None:
     assert calls[-1][2:] == ["ls", f"dbfs:{base}/R1"]
     assert not scores_exist(f"{base}/R1/seed=1.parquet", tmp_path)
     assert not scores_exist(f"{base}/missing/seed=0.parquet", tmp_path)
+    assert not amt.volume.exists(tmp_path, f"{base}/fresh/model.py")
     with pytest.raises(amt.volume.VolumeError, match="scopes"):
         scores_exist(f"{base}/denied/seed=0.parquet", tmp_path)
 

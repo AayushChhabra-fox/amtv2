@@ -51,7 +51,8 @@ def exists(root: Path, remote: str) -> bool:
     )
     if done.returncode != 0:
         detail = _detail(done)
-        if "not found" in detail.lower() or "does not exist" in detail.lower():
+        missing = ("not found", "does not exist", "no such file", "no such directory")
+        if any(text in detail.lower() for text in missing):
             return False
         raise VolumeError(f"listing {path.parent} failed: {detail}")
     return path.name in {line.strip().rstrip("/") for line in done.stdout.splitlines()}
