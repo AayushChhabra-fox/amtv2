@@ -8,6 +8,7 @@ Submission is idempotent on the caller's token. ``runs/run-now`` and
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -161,6 +162,7 @@ class DatabricksJobs:
         del job_key
         _check_params(job, params)
         params = _bundle_relative_spec(self.root, params)
+        idempotency_token = _api_token(idempotency_token)
         from amt.deploy import assert_fresh
 
         assert_fresh(self.root)
@@ -349,6 +351,15 @@ class DatabricksJobs:
             if not token:
                 return ids
             body["page_token"] = token
+
+
+def _api_token(token: str) -> str:
+    """The Jobs API rejects idempotency tokens longer than 64 characters."""
+
+    if len(token) <= 64:
+        return token
+    digest = hashlib.sha256(token.encode()).hexdigest()[:16]
+    return f"{token[:47]}-{digest}"
 
 
 def _bundle_relative_spec(root: Path, params: dict) -> dict:

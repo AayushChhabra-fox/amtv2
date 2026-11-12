@@ -322,6 +322,15 @@ def test_spec_is_sent_relative_to_the_bundle(tmp_path: Path) -> None:
     assert _bundle_relative_spec(tmp_path, {"spec": "/elsewhere/x"})["spec"] == "/elsewhere/x"
 
 
+def test_long_idempotency_tokens_are_shortened_stably() -> None:
+    from amt.jobs_backend import _api_token
+
+    long = "ladder-nfy_article_rerank_demo:R1:4c2fa8bf8d50:retry-1024968159126853"
+    assert _api_token("round0-x:R0:abc") == "round0-x:R0:abc"
+    assert len(_api_token(long)) == 64
+    assert _api_token(long) == _api_token(long) != _api_token(long + "0")
+
+
 def test_ladder_dataset_name_resolves_to_its_spec() -> None:
     from amt.cli import _dataset, _dataset_path
 
