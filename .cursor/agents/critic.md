@@ -28,5 +28,6 @@ DROP or REVISE when any of these fail. PASS only when all of them hold.
 5. Falsifiability. `cheap_test` and `kill_if` name an observable outcome, not a vibe.
 6. Scope. The idea stays inside the brief. It does not retune the metric, the split, or the harness.
 7. References. Each entry in `references` is an `http` or `https` URL. DROP or REVISE when a citation is used to justify a forbidden column or an input that is not available at serve time. An empty list is fine.
+8. Device. DROP `device: gpu` when the prompt says no GPU is configured. A missing device means CPU.
 
 Keep at most K proposals, and prefer distinct families when the brief asks for them. On the walking-skeleton brief, PASS the single logistic proposal.

@@ -165,7 +165,7 @@ def test_fake_loop_reaches_report(tmp_path: Path, monkeypatch) -> None:
     state = run_brief(brief, root=tmp_path)
     assert state.stage == "REPORT"
     assert state.promoted == ["c03"]
-    assert FakeJobs(tmp_path).submit_count() == 11
+    assert FakeJobs(tmp_path).submit_count() == 14
     assert (tmp_path / "runs" / "search" / "round_1.md").is_file()
     digest = (tmp_path / "runs" / "search" / "round_1.md").read_text(encoding="utf-8")
     assert "Spent" in digest
@@ -175,7 +175,7 @@ def test_fake_loop_reaches_report(tmp_path: Path, monkeypatch) -> None:
     assert audit_rows(tmp_path, "search") == []
     again = run_brief(brief, root=tmp_path)
     assert again.stage == "REPORT"
-    assert FakeJobs(tmp_path).submit_count() == 11
+    assert FakeJobs(tmp_path).submit_count() == 14
 
 
 def test_resume_does_not_resubmit_the_search_job(tmp_path: Path, monkeypatch) -> None:
@@ -194,7 +194,7 @@ def test_resume_does_not_resubmit_the_search_job(tmp_path: Path, monkeypatch) ->
     monkeypatch.delenv("AMT_STOP_AFTER")
     second = run_brief(brief, root=tmp_path)
     assert second.stage == "REPORT"
-    assert FakeJobs(tmp_path).submit_count() == 11
+    assert FakeJobs(tmp_path).submit_count() == 14
     resumed = json.loads((tmp_path / "runs" / "search" / "state.json").read_text(encoding="utf-8"))
     assert resumed["submitted_jobs"]["c00/R1/0"]["job_run_id"] == "fake-1"
 

@@ -113,6 +113,7 @@ class NodeDecision(BaseModel):
     delta: DeltaVsBaseline | None = None
     ref_deltas: dict[str, DeltaVsBaseline] = Field(default_factory=dict)
     seeds: list[int] = Field(default_factory=list)
+    note: str | None = None
 
 
 class RungDecision(BaseModel):
@@ -147,6 +148,7 @@ def decide(
     *,
     n_resamples: int = 1000,
     seed: int = 0,
+    shared_cluster: bool = False,
 ) -> RungDecision:
     """Apply hard kills, the rung floor, and from R2 dominance, halving, and promotion.
 
@@ -171,11 +173,15 @@ def decide(
 
     grouped = _group(candidates)
     preliminary: dict[str, NodeDecision] = {}
+    latency_suspect: set[str] = set()
     alive: list[_Summary] = []
     for node_id in sorted(grouped):
         seeds = grouped[node_id]
         summary = _summarize(seeds)
         hard = _hard_kill(seeds, summary, brief)
+        if hard is not None and hard.rule == "latency" and shared_cluster:
+            latency_suspect.add(node_id)
+            hard = None
         if hard is not None:
             preliminary[node_id] = hard
             continue
@@ -233,6 +239,10 @@ def decide(
             decisions.append(_node(summary, status="kept", rule="diversity", kill_reason=None))
         else:
             decisions.append(_node(summary, status="kept", rule="survive", kill_reason=None))
+
+    for decision in decisions:
+        if decision.node_id in latency_suspect and decision.status in {"kept", "promoted"}:
+            decision.note = "latency_suspect"
 
     return RungDecision(
         rung=rung,  # type: ignore[arg-type]

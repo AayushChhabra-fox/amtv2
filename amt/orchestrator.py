@@ -19,8 +19,9 @@ from amt.budget import (
     inflight_dbu,
     node_committed_dbu,
 )
+from amt.config import effective_concurrency, load_settings
 from amt.confirm import ConfirmationSubmission, confirmation_submissions
-from amt.jobs_backend import make_backend
+from amt.jobs_backend import FakeJobs, make_backend
 from amt.ledger import append, read_rows
 from amt.preflight import preflight_candidate
 from amt.pruner import RunView, commit_rung, decide, ledger_row
@@ -47,6 +48,13 @@ from amt.schemas import (
     parse_agent_output,
 )
 from amt.signoff import SignoffError, brief_key, search_block_reason
+from amt.snapshot import SnapshotError, upload_candidate
+from amt.submit import (
+    baselines_required,
+    lgbm_baseline_view,
+    missing_baseline_message,
+    train_params,
+)
 
 # Caps from section 3.4. A schema failure is returned once; the next one escalates.
 MAX_DEBUG_ATTEMPTS = 3
@@ -116,6 +124,11 @@ def run_brief(
         state = _enter_phase2(state, root)
         _save(state_path, state)
         return state
+    from amt.doctor import cheap
+
+    problems = cheap()
+    if problems:
+        return _stop(state_path, state, root, "; ".join(problems))
     backend = make_backend(root)
     while state.stage not in {"REPORT", "ESCALATE"}:
         if _stop_requested(root, state.run_id):
@@ -262,6 +275,22 @@ def _write_feedback(root: Path, state: RunState, revision: AgentRevision) -> Non
     path.write_text(revision.message)
 
 
+def _others_inflight(root: Path, run_id: str) -> bool:
+    runs = root / "runs"
+    if not runs.is_dir():
+        return False
+    for path in runs.glob("*/state.json"):
+        if path.parent.name == run_id:
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        if payload.get("stage") not in {"REPORT", "ESCALATE"}:
+            return True
+    return False
+
+
 def _submit(state: RunState, brief: Brief, root: Path, backend: object) -> bool:
     key = f"{state.candidate_id}/{state.rung}/{state.seed}"
     record = dict(state.submitted_jobs.get(key) or {})
@@ -293,7 +322,12 @@ def _submit(state: RunState, brief: Brief, root: Path, backend: object) -> bool:
         "experiment_name": "/Shared/amt/nfy_article_rerank",
     }
     token = f"{state.run_id}:{key}"
-    job_run_id = backend.submit(job_key=key, params=params, idempotency_token=token)  # type: ignore[attr-defined]
+    job_run_id = backend.submit(  # type: ignore[attr-defined]
+        job="hello_train",
+        job_key=key,
+        params=params,
+        idempotency_token=token,
+    )
     record.update({"job_run_id": job_run_id, "submitted_at": time.time(), "dbu_est": estimate})
     state.submitted_jobs[key] = record
     return True
@@ -662,6 +696,7 @@ def _search_critique(state: RunState, brief: Brief, root: Path) -> RunState:
                 cheap_test=candidate.cheap_test,
                 kill_if=candidate.kill_if,
                 est_cost=candidate.est_cost,
+                device=candidate.device,
                 rung=rung,  # type: ignore[arg-type]
                 search_round=state.round,
                 status="pending",
@@ -718,6 +753,13 @@ def _search_preflight(state: RunState, brief: Brief, root: Path) -> RunState:
             return _maybe_pause(state, root, "PREFLIGHT")
         return _escalate(state, root, "no candidate passed preflight")
     directory = root / "candidates" / node.node_id
+    if node.device == "gpu" and not load_settings(root).gpu_available:
+        return _fail_preflight(
+            state,
+            root,
+            node,
+            "gpu proposals are dropped: no GPU cluster or node type",
+        )
     try:
         preflight_candidate(directory)
     except Exception as exc:
@@ -774,7 +816,7 @@ def _search_submit(state: RunState, brief: Brief, root: Path, backend: object) -
             state.stage = "WAIT"
             return _maybe_pause(state, root, "SUBMIT")
         return _escalate(state, root, "nothing to submit")
-    cap = brief.budget.max_concurrent_jobs
+    cap = effective_concurrency(brief)
     if cap is not None and _inflight_unfinished(state) >= cap:
         state.stage = "WAIT"
         return state
@@ -793,19 +835,31 @@ def _search_submit(state: RunState, brief: Brief, root: Path, backend: object) -
             )
         except BudgetExceeded as exc:
             return _escalate(state, root, str(exc))
-        params = {
-            "candidate_id": node.node_id,
-            "rung": node.rung,
-            "seed": str(node.seed),
-            "batch": state.batch,
-            "family": node.family,
-            "operator": node.operator,
-            "git_sha": state.git_sha,
-            "dbu_est": str(estimate),
-            "amt_run_id": state.run_id,
-            "split": "search_val",
-        }
+        if baselines_required(backend):
+            missing = missing_baseline_message(root, brief, node.rung)
+            if missing:
+                return _escalate(state, root, missing)
+        try:
+            model = upload_candidate(root, state.run_id, node.node_id, state.git_sha)
+        except SnapshotError as exc:
+            return _escalate(state, root, str(exc))
+        params = train_params(
+            root=root,
+            brief=brief,
+            node_id=node.node_id,
+            parent_id=node.parent_id,
+            family=node.family,
+            operator=node.operator,
+            rung=node.rung,
+            seed=node.seed,
+            batch=state.batch,
+            run_id=state.run_id,
+            git_sha=state.git_sha,
+            model=model,
+            device=node.device,
+        )
         job_run_id = backend.submit(  # type: ignore[attr-defined]
+            job="train",
             job_key=key,
             params=params,
             idempotency_token=f"{state.run_id}:{key}",
@@ -861,7 +915,8 @@ def _search_prune(state: RunState, brief: Brief, root: Path, backend: object) ->
         record = dict(state.submitted_jobs.get(key) or {})
         found = backend.find_mlflow_run(  # type: ignore[attr-defined]
             tags={
-                "candidate_id": node.node_id,
+                "run_id": state.run_id,
+                "node_id": node.node_id,
                 "rung": node.rung,
                 "seed": str(node.seed),
             }
@@ -893,20 +948,15 @@ def _search_prune(state: RunState, brief: Brief, root: Path, backend: object) ->
         )
     if not views:
         return _escalate(state, root, f"no runs to prune at {rung}")
-    baseline = RunView(
-        node_id="lgbm_reference",
-        family="lgbm_reference",
-        kind="baseline",
-        rung=rung,  # type: ignore[arg-type]
-        split="search_val",
-        operator="draft",
-        claim="same-rung lightgbm reference",
-        metric=0.4,
-        delta=DeltaVsBaseline(point=0.0, ci_lo=0.0, ci_hi=0.0),
-        git_sha=state.git_sha,
-    )
+    baseline = lgbm_baseline_view(root, brief, rung, state.git_sha)
     try:
-        decision = decide(rung, views, [baseline], brief)
+        decision = decide(
+            rung,
+            views,
+            [baseline],
+            brief,
+            shared_cluster=load_settings(root).fixed_cluster,
+        )
     except Exception as exc:
         return _escalate(state, root, f"pruner failed: {exc}")
     commit_rung(root, state.run_id, views, decision)
@@ -943,6 +993,8 @@ def _search_confirm(state: RunState, brief: Brief, root: Path, backend: object) 
         state.stage = "REPORT"
         _write_report(root, state, brief)
         return state
+    if not isinstance(backend, FakeJobs) and _others_inflight(root, state.run_id):
+        return _escalate(state, root, "confirmation waits until other AMT runs finish")
     families = {node.node_id: node.family for node in state.nodes}
     submissions = request_confirmation(
         state.promoted,
@@ -966,8 +1018,18 @@ def _search_confirm(state: RunState, brief: Brief, root: Path, backend: object) 
             except BudgetExceeded as exc:
                 return _escalate(state, root, str(exc))
             params = submission.job_params()
-            params["rung"] = "R3"
+            if submission.candidate_id != "lgbm_reference":
+                try:
+                    params["model"] = upload_candidate(
+                        root, state.run_id, submission.candidate_id, state.git_sha
+                    )
+                except SnapshotError as exc:
+                    return _escalate(state, root, str(exc))
+            from amt.tokens import issue_token
+
+            params["confirm_token"] = issue_token(root)
             job_run_id = backend.submit(  # type: ignore[attr-defined]
+                job="confirm",
                 job_key=key,
                 params=params,
                 idempotency_token=f"{state.run_id}:{key}",
@@ -1013,6 +1075,8 @@ def _advance_round(state: RunState, brief: Brief, root: Path, survived: bool) ->
         plateau=fork_on_plateau(list(state.improvement_gains), brief.min_effect),
         lineage_count=len(set(kept)),
     )
+    if brief.max_rounds is not None and state.round >= brief.max_rounds:
+        nxt = "confirm"
     if nxt == "confirm":
         if not state.promoted:
             state.stage = "REPORT"
@@ -1223,7 +1287,15 @@ def _job_charge(record: dict[str, Any]) -> float:
 
 
 def _delta_from_found(found: dict[str, Any] | None) -> DeltaVsBaseline | None:
-    if not found or found.get("delta_point") is None:
+    if not found:
+        return None
+    if found.get("delta_lgbm_point") is not None:
+        return DeltaVsBaseline(
+            point=float(found["delta_lgbm_point"]),
+            ci_lo=float(found["delta_lgbm_ci_lo"]),
+            ci_hi=float(found["delta_lgbm_ci_hi"]),
+        )
+    if found.get("delta_point") is None:
         return None
     return DeltaVsBaseline(
         point=float(found["delta_point"]),
@@ -1269,6 +1341,7 @@ def _write_node_spec(root: Path, node: NodeWork) -> None:
         "fit_argument": node.fit_argument,
         "cheap_test": node.cheap_test,
         "kill_if": node.kill_if,
+        "device": node.device,
     }
     (directory / "candidate.yaml").write_text(
         yaml.safe_dump(payload, sort_keys=False), encoding="utf-8"

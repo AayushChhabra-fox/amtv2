@@ -21,6 +21,7 @@ Return one JSON object that matches `amt/json_schemas/proposal_batch.schema.json
 - `cheap_test`: the smoke check that would falsify it before a full rung
 - `kill_if`: the result that should stop the lineage
 - `est_cost`: estimated DBU for the next rung, a number >= 0
+- `device`: `cpu` or `gpu`. Use `cpu` unless the model cannot train on CPU. GPU proposals are dropped when the run has no GPU cluster.
 - `parent_id`: required for improve, debug, ablate, and combine; omit it on a draft
 - `change`: the single atomic change; required for improve
 

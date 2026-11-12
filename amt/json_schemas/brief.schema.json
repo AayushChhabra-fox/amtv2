@@ -501,6 +501,20 @@
       "title": "K",
       "type": "integer"
     },
+    "max_rounds": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Stop after this many rounds and confirm. Unset runs the full schedule.",
+      "title": "Max Rounds"
+    },
     "mode": {
       "anyOf": [
         {

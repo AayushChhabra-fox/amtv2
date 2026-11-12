@@ -317,6 +317,7 @@ def test_candidate_schema_lists_plan_fields() -> None:
         "kill_if",
         "est_cost",
         "references",
+        "device",
     }
     assert set(schema["required"]) == {
         "id",

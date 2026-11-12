@@ -48,7 +48,7 @@ class ConfirmationSubmission:
             "seed": self.seed,
             "batch": self.batch,
             "spec": self.spec,
-            "baseline": "",
+            "baseline": "lgbm_reference" if self.candidate_id == "lgbm_reference" else "",
             "reference_score": "production",
             "model": "",
             "catalog": self.catalog,
@@ -58,6 +58,15 @@ class ConfirmationSubmission:
             "git_sha": self.git_sha,
             "family": self.family,
             "run_id": self.run_id,
+            "node_id": self.candidate_id,
+            "parent_id": "",
+            "operator": "draft",
+            "paired_reference": "production",
+            "baseline_scores": "",
+            "confirm_token": "",
+            "root": "",
+            "shared_cluster": "",
+            "device": "cpu",
         }
 
 
@@ -90,6 +99,23 @@ def confirmation_submissions(
                     spec=spec,
                     run_id=run_id,
                     family=family_map.get(node_id, "candidate"),
+                    git_sha=git_sha,
+                    catalog=catalog,
+                    schema=schema,
+                )
+            )
+    if chosen:
+        for seed in CONFIRM_SEEDS:
+            submissions.append(
+                ConfirmationSubmission(
+                    candidate_id="lgbm_reference",
+                    seed=str(seed),
+                    rung=CONFIRM_RUNG,
+                    split=CONFIRM_SPLIT,
+                    batch=batch,
+                    spec=spec,
+                    run_id=run_id,
+                    family="lgbm_reference",
                     git_sha=git_sha,
                     catalog=catalog,
                     schema=schema,

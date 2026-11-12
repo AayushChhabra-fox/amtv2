@@ -349,7 +349,7 @@ def test_k4_unattended_run_records_stats_and_opens_phase2(
     entry = (tmp_path / "runs" / "full-entry" / "phase2_entry.md").read_text(encoding="utf-8")
     assert "does not start training" in entry
     assert "bug rate" in entry
-    assert FakeJobs(tmp_path).submit_count() == before + 24
+    assert FakeJobs(tmp_path).submit_count() == before + 27
     assert main(["gates", "--root", str(tmp_path), "--brief", str(brief)]) == 0
     assert "full budget ready" in capsys.readouterr().out
     assert main(["stats", "--root", str(tmp_path), "--run-id", "small"]) == 0

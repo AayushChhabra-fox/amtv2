@@ -81,6 +81,15 @@
           "title": "Est Cost",
           "type": "number"
         },
+        "device": {
+          "default": "cpu",
+          "enum": [
+            "cpu",
+            "gpu"
+          ],
+          "title": "Device",
+          "type": "string"
+        },
         "rung": {
           "default": "R1",
           "enum": [

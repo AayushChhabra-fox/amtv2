@@ -183,6 +183,11 @@ class Brief(BaseModel):
     eval: EvalBlock | None = None
     budget: Budget
     k: int = Field(default=4, ge=1, description="Nodes kept per round.")
+    max_rounds: int | None = Field(
+        default=None,
+        ge=1,
+        description="Stop after this many rounds and confirm. Unset runs the full schedule.",
+    )
     mode: str | None = None
     design_space: DesignSpace | None = None
     off_limits: list[str] = Field(default_factory=list)
@@ -223,6 +228,7 @@ class Candidate(BaseModel):
     cheap_test: str = Field(min_length=1)
     kill_if: str = Field(min_length=1)
     est_cost: float = Field(ge=0, description="Estimated DBU for the next rung.")
+    device: Literal["cpu", "gpu"] = "cpu"
     references: list[str] = Field(
         default_factory=list,
         max_length=5,
@@ -356,6 +362,7 @@ class NodeWork(BaseModel):
     cheap_test: str = ""
     kill_if: str = ""
     est_cost: float = Field(default=0.1, ge=0)
+    device: Literal["cpu", "gpu"] = "cpu"
     rung: Rung = "R1"
     seed: int = Field(default=0, ge=0)
     search_round: int = Field(default=1, ge=0)
