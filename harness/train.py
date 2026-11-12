@@ -32,6 +32,7 @@ from harness.baselines import (  # noqa: E402
 from harness.data.build_dataset import project_root, resolve_spec  # noqa: E402
 from harness.data.contract import HOLDOUT_SPLITS, SPLIT_NAMES, load_spec  # noqa: E402
 from harness.data.sampling import choose_query_ids, query_ids_hash, query_times  # noqa: E402
+from harness.deps import activate_candidate_requirements  # noqa: E402
 from harness.evaluate import metrics, paired_day_blocked_delta  # noqa: E402
 from harness.interface import FitContext, RankingFrame  # noqa: E402
 from harness.ladder import LADDER_IDS, make_ladder_ranker  # noqa: E402
@@ -391,6 +392,10 @@ def main(argv: list[str] | None = None) -> None:
         if args.model
         else project_root() / "candidates" / args.candidate_id / "model.py"
     )
+    requirements_sha = ""
+    install_s = 0.0
+    if not args.baseline:
+        requirements_sha, install_s = activate_candidate_requirements(model_path)
     ranker = make_ranker(args.baseline or None, model_path, args.reference_score)
     tags = mlflow_tags(
         run_id=args.run_id or args.batch,
@@ -404,6 +409,8 @@ def main(argv: list[str] | None = None) -> None:
         split=eval_split,
         git_sha=args.git_sha,
     )
+    if requirements_sha:
+        tags["requirements_sha"] = requirements_sha
     baseline_scores = None
     if args.baseline_scores:
         baseline_scores = json.loads(Path(args.baseline_scores).read_text())
@@ -419,6 +426,9 @@ def main(argv: list[str] | None = None) -> None:
         baseline_scores=baseline_scores,
         tags=tags,
     )
+    if requirements_sha:
+        result.metrics["install_s"] = round(install_s, 4)
+        result.tags["requirements_sha"] = requirements_sha
     run_id = log_mlflow(result, args.experiment_name or None)
     payload = {
         "status": result.status,

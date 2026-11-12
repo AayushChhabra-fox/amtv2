@@ -1,8 +1,9 @@
 """Static checks, then the R0 smoke test, before any Databricks submission.
 
 Static checks reject Spark and dbutils, table names, network or subprocess
-calls, file paths outside the candidate directory, imports outside the
-allowlist, and any mention of a holdout split.
+calls, file paths outside the candidate directory, undeclared third-party
+imports, and any mention of a holdout split. A pinned ``requirements.txt``
+is installed by the harness and those import names are then allowed.
 """
 
 from __future__ import annotations
@@ -15,7 +16,9 @@ from pathlib import Path
 
 import numpy as np
 
-ALLOWLIST = frozenset(
+from harness.deps import RequirementsError, env_root, import_names, install
+
+BASE_IMPORTS = frozenset(
     {
         "numpy",
         "pandas",
@@ -58,9 +61,12 @@ class PreflightError(RuntimeError):
         super().__init__("; ".join(violations))
 
 
-def static_check(candidate_dir: Path) -> list[str]:
+def static_check(
+    candidate_dir: Path, *, extra_imports: frozenset[str] | None = None
+) -> list[str]:
     """Return human-readable violations. An empty list means the code is allowed."""
 
+    allowed = BASE_IMPORTS | frozenset(extra_imports or ())
     violations: list[str] = []
     sources = sorted(candidate_dir.glob("*.py"))
     if not sources:
@@ -76,33 +82,50 @@ def static_check(candidate_dir: Path) -> list[str]:
         except SyntaxError as exc:
             violations.append(f"{rel} syntax error: {exc.msg}")
             continue
-        violations.extend(_walk(tree, rel))
+        violations.extend(_walk(tree, rel, allowed))
     return violations
 
 
 def preflight_candidate(candidate_dir: Path) -> dict[str, float]:
-    """Run static checks, then the smoke fit. Raises PreflightError on failure."""
+    """Install declared pins, run static checks, then the smoke fit."""
 
-    violations = static_check(candidate_dir)
+    extra: frozenset[str] = frozenset()
+    target = None
+    if (candidate_dir / "requirements.txt").is_file():
+        try:
+            target = install(candidate_dir, env_root())
+            extra = import_names(target)
+        except RequirementsError as exc:
+            raise PreflightError([str(exc)]) from exc
+    violations = static_check(candidate_dir, extra_imports=extra)
     if violations:
         raise PreflightError(violations)
+    inserted = False
+    if target is not None:
+        location = str(target)
+        if location not in sys.path:
+            sys.path.insert(0, location)
+            inserted = True
     try:
         smoke = smoke_candidate(candidate_dir)
     except Exception as exc:
         raise PreflightError([str(exc)]) from exc
+    finally:
+        if inserted and sys.path and sys.path[0] == str(target):
+            sys.path.pop(0)
     smoke["static"] = 1.0
     return smoke
 
 
-def _walk(tree: ast.AST, rel: str) -> list[str]:
+def _walk(tree: ast.AST, rel: str, allowed: frozenset[str]) -> list[str]:
     violations: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                violations.extend(_import(rel, alias.name))
+                violations.extend(_import(rel, alias.name, allowed))
         elif isinstance(node, ast.ImportFrom):
             if node.module:
-                violations.extend(_import(rel, node.module))
+                violations.extend(_import(rel, node.module, allowed))
         elif isinstance(node, ast.Name) and node.id in _NAME_BAN:
             violations.append(f"{rel} references {node.id}")
         elif isinstance(node, ast.Attribute) and node.attr in _NAME_BAN:
@@ -115,15 +138,15 @@ def _walk(tree: ast.AST, rel: str) -> list[str]:
     return violations
 
 
-def _import(rel: str, module: str) -> list[str]:
+def _import(rel: str, module: str, allowed: frozenset[str]) -> list[str]:
     root = module.split(".", 1)[0]
     if root in _DENIED:
         return [f"{rel} imports {root}, which is blocked"]
-    if root in ALLOWLIST:
+    if root in allowed:
         return []
     if root in sys.stdlib_module_names or root in sys.builtin_module_names:
         return []
-    return [f"{rel} imports {root}, which is outside the allowlist"]
+    return [f"{rel} imports {root}, which is not in the base set or requirements.txt"]
 
 
 def _call(node: ast.Call, rel: str) -> list[str]:
