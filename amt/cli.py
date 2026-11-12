@@ -6,7 +6,18 @@ import argparse
 import json
 from pathlib import Path
 
+from amt.batch import (
+    collect_ladder,
+    collect_noise,
+    submit_dataset,
+    submit_ladder,
+    submit_noise,
+    wait_job,
+)
+from amt.deploy import DeployError, deploy
+from amt.doctor import report as doctor_report
 from amt.envutil import load_env
+from amt.final import FinalError, open_final, reproduce
 from amt.ladder import build_ladder_report, ladder_jobs
 from amt.ladder import load_cells as load_ladder_cells
 from amt.noise import GateDataError, build_noise_report, round0_jobs
@@ -70,12 +81,16 @@ def main(argv: list[str] | None = None) -> int:
     noise_parser.add_argument("--brief", type=Path, required=True)
     noise_parser.add_argument("--observations", type=Path)
     noise_parser.add_argument("--plan", action="store_true")
+    noise_parser.add_argument("--submit", action="store_true")
+    noise_parser.add_argument("--collect", action="store_true")
     noise_parser.add_argument("--root", type=Path, default=None)
 
     ladder_parser = sub.add_parser("ladder", help="write the ladder report for gate G2")
     ladder_parser.add_argument("--dataset", required=True)
     ladder_parser.add_argument("--observations", type=Path)
     ladder_parser.add_argument("--plan", action="store_true")
+    ladder_parser.add_argument("--submit", action="store_true")
+    ladder_parser.add_argument("--collect", action="store_true")
     ladder_parser.add_argument("--skip-r1", action="append", default=[])
     ladder_parser.add_argument("--r1-train-fraction", type=float, default=None)
     ladder_parser.add_argument("--root", type=Path, default=None)
@@ -97,8 +112,65 @@ def main(argv: list[str] | None = None) -> int:
     gates_parser.add_argument("--brief", type=Path, required=True)
     gates_parser.add_argument("--root", type=Path, default=None)
 
+    deploy_parser = sub.add_parser("deploy", help="build the wheel and deploy the bundle")
+    deploy_parser.add_argument("--root", type=Path, default=None)
+
+    dataset_parser = sub.add_parser("dataset", help="dataset commands")
+    dataset_sub = dataset_parser.add_subparsers(dest="dataset_command", required=True)
+    build_parser = dataset_sub.add_parser("build", help="submit the dataset build job")
+    build_parser.add_argument("--spec", required=True)
+    build_parser.add_argument("--wait", action="store_true")
+    build_parser.add_argument("--root", type=Path, default=None)
+
+    final_parser = sub.add_parser("final", help="open the final holdout once")
+    final_parser.add_argument("--run-id", required=True)
+    final_parser.add_argument("--signer", required=True)
+    final_parser.add_argument("--root", type=Path, default=None)
+
+    reproduce_parser = sub.add_parser("reproduce", help="rerun one ledger row")
+    reproduce_parser.add_argument("--run-id", required=True)
+    reproduce_parser.add_argument("--node", required=True)
+    reproduce_parser.add_argument("--root", type=Path, default=None)
+
+    doctor_parser = sub.add_parser("doctor", help="check auth, workspace, and the agent CLI")
+    doctor_parser.add_argument("--root", type=Path, default=None)
+
     args = parser.parse_args(argv)
     root = args.root if getattr(args, "root", None) else Path.cwd()
+    if args.command == "deploy":
+        try:
+            path = deploy(root)
+        except DeployError as exc:
+            print(str(exc))
+            return 1
+        print(f"deployed {path}")
+        return 0
+    if args.command == "dataset":
+        run_id = submit_dataset(root, args.spec)
+        print(run_id)
+        if args.wait:
+            result = wait_job(root, run_id)
+            print(result.get("result_state"))
+            return 0 if result.get("result_state") == "SUCCESS" else 1
+        return 0
+    if args.command == "final":
+        try:
+            path = open_final(root, args.run_id, args.signer)
+        except FinalError as exc:
+            print(str(exc))
+            return 1
+        print(path)
+        return 0
+    if args.command == "reproduce":
+        try:
+            print(reproduce(root, args.run_id, args.node))
+        except FinalError as exc:
+            print(str(exc))
+            return 1
+        return 0
+    if args.command == "doctor":
+        print(doctor_report(root))
+        return 0
     if args.command == "noise":
         return _noise(root, args)
     if args.command == "ladder":
@@ -148,10 +220,30 @@ def _noise(root: Path, args: argparse.Namespace) -> int:
         return 1
     if args.plan:
         print(json.dumps([job.params() for job in round0_jobs(spec.reference_scores)], indent=2))
-        if args.observations is None:
+        if args.observations is None and not args.submit and not args.collect:
             return 0
+    bare = not args.plan and args.observations is None and not args.submit and not args.collect
+    if args.submit or bare:
+        submit_noise(root, brief, str(spec_path(root, brief)), list(spec.reference_scores))
+        if args.submit and not args.collect and not bare:
+            print("submitted")
+            return 0
+    if args.collect or bare:
+        try:
+            status, path = collect_noise(
+                root,
+                brief,
+                brief_path,
+                spec.name,
+                list(spec.reference_scores),
+            )
+        except (OSError, GateDataError, json.JSONDecodeError) as exc:
+            print(str(exc))
+            return 1
+        print(f"{status} {path}")
+        return 0 if status == "pass" else 2
     if args.observations is None:
-        print("pass --observations or --plan")
+        print("pass --observations, --plan, --submit, or --collect")
         return 1
     try:
         cells = load_noise_cells(json.loads(_under_root(root, args.observations).read_text()))
@@ -175,10 +267,29 @@ def _ladder(root: Path, args: argparse.Namespace) -> int:
         fraction = args.r1_train_fraction
     if args.plan:
         print(json.dumps([job.params() for job in ladder_jobs()], indent=2))
-        if args.observations is None:
+        if args.observations is None and not args.submit and not args.collect:
             return 0
+    bare = not args.plan and args.observations is None and not args.submit and not args.collect
+    if args.submit or bare:
+        submit_ladder(root, dataset, args.dataset)
+        if args.submit and not args.collect and not bare:
+            print("submitted")
+            return 0
+    if args.collect or bare:
+        try:
+            status, path = collect_ladder(
+                root,
+                dataset,
+                skip_r1=list(args.skip_r1),
+                r1_train_fraction=fraction,
+            )
+        except (OSError, GateDataError, json.JSONDecodeError) as exc:
+            print(str(exc))
+            return 1
+        print(f"{status} {path}")
+        return 0 if status == "pass" else 2
     if args.observations is None:
-        print("pass --observations or --plan")
+        print("pass --observations, --plan, --submit, or --collect")
         return 1
     try:
         cells = load_ladder_cells(json.loads(_under_root(root, args.observations).read_text()))

@@ -38,3 +38,4 @@ select = ["E", "F", "I"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["databricks: live Databricks workspace test (set AMT_LIVE_DATABRICKS=1)"]
