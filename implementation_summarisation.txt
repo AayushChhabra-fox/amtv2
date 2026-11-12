@@ -1,0 +1,79 @@
+## subagent 0
+- Phase 0 is in place and committed as 5c01b68.
+- The repo is a Python 3.11 project with the Databricks CLI on a developer token. Schema product_api_dev.amt, volume amt_artifacts, and MLflow experiment /Shared/amt/nfy_article_rerank are set up. The serverless hello_train job logs ndcg_at_10 with the AMT tags.
+- amt run briefs/toy.yaml ran unattended through planner, critic, logistic candidate, smoke, Databricks, pruner, and ledger. The job was 512525103367666, the MLflow run cfb5ab99e1b843acae458ba8544b18ba, the metric 0.5, and the audit passed. Resuming did not submit the job again. The implementer hook blocks writes outside candidates/<id>/.
+- For the NFY data: article embeddings come from product_api_prod.news_for_you.news_candidates_feature joined on entity_id (293/300 sampled interactions matched). Impressions dedupe on latest_impression_rn = 1. Profile versions matched 120/120 sampled requests on (user_profile_key, profile_content_hash). label_window stays 24h because interactions are date-grained.
+
+## subagent 1
+M1 contracts are in place.
+
+- amt/schemas.py now has typed models for Brief, Candidate, Verdict, LedgerRow, and RunState, plus the MLflow tag set used on every run.
+- JSON Schemas for those models are in amt/json_schemas/.
+- ledger/results.jsonl is append-only, and only amt/ can write it.
+- A malformed planner or critic payload is returned as one revision, recorded on the run, and the loop stops.
+- Round-trip and malformed-output tests passed (29 tests total).
+
+## subagent 2
+- M2 is implemented and both plan to-dos are marked completed.
+- The dataset builder is driven by dataset.yaml. It enforces the output contract and rejects point-in-time leaks, labels outside the label window, and forbidden columns. nfy_article_rerank and nfy_clip_rerank share the same SQL and differ only by entity_type.
+- The harness adds the ranker interface, graded NDCG@10 with a day-blocked bootstrap, latency, and baselines (production score, recency, popularity, random, LightGBM). Databricks jobs build_dataset, train, confirm, and pruner are wired on m5d.xlarge. The confirm job always scores select_holdout at R3.
+- Tests cover planted leaks, both surfaces with no harness edits, stable hashes, the 0.005 NDCG tolerance, and baselines at R0–R3. ruff is clean and 38 tests passed.
+
+## subagent 3
+- The M3 control layer is in place and tested.
+- The pruner now applies the rung rules: hard kills, a floor that tightens from R1 to R3, dominance, halving with one R1 diversity slot, and promotion of the top 3 at R3 whose lower bound is above 0. It writes survivors and ledger rows, and it refuses holdout splits before reading any metric.
+- The budget check estimates spend from wall-clock times the cluster rate and blocks a submit that would drop the pool below zero or pass a candidate's DBU cap.
+- amt status --audit shows live nodes, spend versus the pool, and kill reasons, and it checks that every ledger row has a job id, an MLflow id, and a git SHA.
+- Confirmation retrains the top 3 promoted nodes for 3 seeds on select_holdout, and only the orchestrator can open it.
+
+## subagent 4
+- M4 is in place. Gate G1 turns a round-0 baseline matrix into a noise report and a required min_effect. Gate G2 checks that the eight known-good and known-bad designs keep their order up the ladder. A person signs each report, and a search brief does not start until both signatures are still current.
+- G1, once per brief. Round 0 is every reference score plus popularity, random, and the LightGBM reference, at R0–R3, seeds 0–2, all on search_val. The binding half-width at a rung is the larger of the day-blocked bootstrap half-width and the three-seed t interval. min_effect must be at least twice the R3 half-width. The proposed starting value is 0.010. If the brief is below that floor, the report asks to raise min_effect, or to lengthen search_val or add seeds and rerun. Whether LightGBM beats production is recorded either way.
+- G2, once per dataset and family set. The pairs are LightGBM on all features versus recency and category only, an MLP versus the same MLP on shuffled labels, fitted embedding similarity versus a seeded permutation, and fitted production-signal weights versus the production score. Good must rank above bad at R1, R2, and R3, and Kendall tau-b between R1 and R3 must be at least 0.6. An inversion only at R1 is re-validated by skipping R1 for that family. A low tau with the within-family order intact is re-validated by raising R1's train fraction. A failure at R2 or R3 stays a failure. Later runs on the same dataset and family set reuse the signature.
+
+- Search briefs stop in ESCALATE until both gates are current. A brief with a pinned candidate, including the toy loop, is unchanged. Changing the brief, the spec, the manifest, or the report makes the signature stale.
+
+```
+amt noise --plan --brief briefs/nfy_article_rerank.yaml
+amt noise --brief briefs/nfy_article_rerank.yaml --observations round0.json
+amt sign g1 --brief briefs/nfy_article_rerank.yaml --manifest path/to/manifest.json --signer "Your Name"
+amt ladder --plan --dataset datasets/nfy_article_rerank
+amt ladder --dataset datasets/nfy_article_rerank --observations ladder.json
+amt sign g2 --dataset nfy_article_rerank --signer "Your Name"
+amt gates --brief briefs/nfy_article_rerank.yaml
+```
+- The train job already accepts the ladder design ids as --baseline. The reports are written from those scored observations. Signing is a separate step, so the NFY warehouse runs are ready to be signed once those jobs have returned metrics. Ruff is clean and the full suite passed, 106 tests.
+
+## subagent 5
+
+- M5 is in place. A search brief now runs as a resumable state machine against a fake agent and a fake jobs backend, and the walking-skeleton brief still goes proposal, critic, logistic model, smoke, and one job.
+- The search loop is draft, then two improvement rounds, then a combine when two lineages exist, then confirmation of the promoted node. State is written to runs/<id>/state.json after every stage. A job key that is already recorded is not submitted again. The loop stops with ESCALATE.md when the critic revision cap, the debug cap (3 attempts), the schema-revision cap, or the DBU pool is hit.
+- approval_mode is read from the brief and from amt run --approval-mode. none only writes the round digest. round_shortlist pauses after the critic, before any candidate is built. every_stage pauses after each stage until amt approve --run-id <id>.
+- Role prompts in .cursor/agents/ now carry the output schema and the rubric. The critic checks task-block conformance, serve-time inputs, and near-duplicates. The reviewer checks that the claimed change is in the diff, that the model only sees the frames it is given, and that limits and holdouts are untouched. Context for each call is the 12 newest ledger lines, the best node per family, sibling lines for a draft or an improvement, and the full fix chain for a debug. Preflight rejects Spark, table names, network and subprocess calls, paths outside the candidate directory, imports outside the allowlist, and holdout split names, then runs the smoke fit. The implementer and reviewer hooks still deny writes outside candidates/<id>/, including harness/, amt/, briefs/, datasets/, resources/, and databricks.yml.
+- Ruff is clean and the full suite passed, 122 tests.
+
+## subagent 6
+- M6 is in place. A search brief can now run the one-time K=1 calibration, then the K=4 unattended run, and only then record that the full budget is ready for Phase 2.
+- G3 calibration is amt run <brief> --scale calibration. That forces K=1 and approval_mode: every_stage, takes one draft lineage through R1–R3, and pauses after each stage until amt approve. It stops before confirmation, so the holdouts stay closed. The packet is gates/g3/<brief>/calibration_report.md (role prompts, spec, reviewer verdict, audit). Sign it once:
+
+```
+uv run amt sign g3 --brief <brief> --run-id <id> --signer "Your Name"
+```
+
+- A second calibration is refused.
+- K=4 unattended run is amt run <brief> --scale small, and it starts only after G3 is signed. Round 1 proposes 8 drafts and keeps 4 across at least 3 families. Later rounds propose 3 improvements of each surviving lineage and keep 2, then one combine. Approval mode stays none. The run passes when at least 3 families are evaluated, every kill has a reason, spend stays inside the pool, and rounds 1–4 each have a digest.
+- Agent statistics are written to runs/<id>/agent_stats.json and into report.md: bug rate (debug attempts divided by implementer calls), revisions, tokens, and wall-clock per node. amt stats --run-id <id> prints them.
+-Full budget is amt run <brief> --scale full. After G3 is signed and a small run has passed, it writes runs/<id>/phase2_entry.md and does not start training.
+
+## subagent 7 (improvements)
+phase 1 review feedback is implemented and committed. ruff is clean and the full suite is 150 passed.
+
+- 8bfb825 feat(pruner): R1 now keeps every node that is not a hard failure or clearly worse than the same-rung LightGBM baseline. Dominance, halving, and the diversity slot start at R2. The K=4 run trains the extra survivors and records 24 submits.
+- a4c89ec feat(planner): the planner may use web search in plan mode and must record up to five http(s) URLs on references. The critic checks those URLs. A live planner call fails if the CLI does not offer plan mode with tools.
+- e65f49e feat(deps): a candidate may pin up to ten exact PyPI versions in requirements.txt. The harness installs them into a hashed target with base-package constraints, and records install_s and requirements_sha. Spark, Databricks, network clients, and re-pins of the base stack are rejected.
+- af0d7e4 docs: the plan now describes the lenient R1 rule, open libraries, planner web search, and the deferred NFY knowledge base.
+
+## job wiring
+Search and confirmation submit the real `train` and `confirm` jobs. `hello_train` is only the toy brief. Candidates are uploaded to an immutable volume snapshot. Round 0 and the ladder are matrix submits (`amt noise`, `amt ladder`). `amt dataset build`, `amt final`, and `amt reproduce` cover the other manual stages. `.env.example` holds auth, workspace, cluster, GPU, limits, and agent settings. `AMT_CLUSTER_ID` runs every job on one cluster; confirmation uses a one-time token. The demo brief is `briefs/nfy_demo.yaml`.
+
+

@@ -636,7 +636,19 @@ Nothing else blocks on a human. Under the default `approval_mode: none`, every p
 3. Who grants write access on `product_api_dev.amt` (catalog/schema owner)?
 4. NFY knowledge base for agents (production scorer code, Zilliz buckets, editorial rules, prior LTR work and the headroom study, Confluence). Deferred until the brief-only evaluation of prompt quality is done; then add it as read-only context for the planner and critic.
 
-## 10. References
+## 10. Job wiring
+
+Search runs submit the `train` job, not `hello_train`. `hello_train` remains the walking-skeleton job. Confirmation submits `confirm`. `amt final` submits `final_holdout` once.
+
+Each candidate is copied to an immutable snapshot at `<volume>/candidates/<run_id>/<node_id>/<git_sha>/model.py` before submit. The path is the job's `--model`. A later edit on the laptop does not change a run that already uploaded that SHA.
+
+Round 0 and the ladder run as one `train` job per rung, with `--matrix`. LightGBM cells write keyed scores to `<volume>/<spec>/<manifest_hash>/baseline_scores/lgbm_reference/<rung>/seed=<s>.parquet`. Search runs pass that file as `--baseline-scores` and fail if a key is missing. Every run also computes a paired delta against the `ref.production` column already on the frame.
+
+`amt deploy` records a hash of `harness/`, `datasets/`, and `resources/`. A submit refuses to run when the tree has changed. Settings come from `.env` (see `.env.example`). `AMT_CLUSTER_ID` pins every job to one cluster. GPU candidates need `AMT_GPU_CLUSTER_ID` or `AMT_GPU_NODE_TYPE`.
+
+The demo spec `datasets/nfy_article_rerank_demo` and brief `briefs/nfy_demo.yaml` are the first live run. Their dates sit inside the NFY train window. G3 stays unused until the real NFY brief.
+
+## 11. References
 
 - AIDE: https://arxiv.org/abs/2502.13138, https://github.com/WecoAI/aideml
 - AIDE² tech report: https://arxiv.org/abs/2609.26457; blog: https://www.weco.ai/blog/first-evidence-of-recursive-self-improvement
