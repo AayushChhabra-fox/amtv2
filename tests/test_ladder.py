@@ -16,7 +16,7 @@ PAIRS = {
     "lgbm": ("lgbm_full", "lgbm_recency_category"),
     "neural": ("neural_normal", "neural_label_shuffled"),
     "embedding": ("embedding_trained", "embedding_random_projection"),
-    "linear_reweight": ("linear_fitted", "linear_production_weights"),
+    "linear_reweight": ("linear_fitted", "linear_label_shuffled"),
 }
 
 
@@ -74,15 +74,15 @@ def test_tau_just_above_and_below_the_bar() -> None:
         ("lgbm_full", "R1"): 4,
         ("lgbm_recency_category", "R1"): 2,
         ("linear_fitted", "R1"): 3,
-        ("linear_production_weights", "R1"): 1,
+        ("linear_label_shuffled", "R1"): 1,
         ("lgbm_full", "R3"): 4,
         ("lgbm_recency_category", "R3"): 3,
         ("linear_fitted", "R3"): 2,
-        ("linear_production_weights", "R3"): 1,
+        ("linear_label_shuffled", "R3"): 1,
         ("lgbm_full", "R2"): 4,
         ("lgbm_recency_category", "R2"): 3,
         ("linear_fitted", "R2"): 2,
-        ("linear_production_weights", "R2"): 1,
+        ("linear_label_shuffled", "R2"): 1,
     }
     passing = build_ladder_report(
         _cells(mild),
@@ -97,15 +97,15 @@ def test_tau_just_above_and_below_the_bar() -> None:
         ("lgbm_full", "R1"): 2,
         ("lgbm_recency_category", "R1"): 1,
         ("linear_fitted", "R1"): 4,
-        ("linear_production_weights", "R1"): 3,
+        ("linear_label_shuffled", "R1"): 3,
         ("lgbm_full", "R2"): 4,
         ("lgbm_recency_category", "R2"): 3,
         ("linear_fitted", "R2"): 2,
-        ("linear_production_weights", "R2"): 1,
+        ("linear_label_shuffled", "R2"): 1,
         ("lgbm_full", "R3"): 4,
         ("lgbm_recency_category", "R3"): 3,
         ("linear_fitted", "R3"): 2,
-        ("linear_production_weights", "R3"): 1,
+        ("linear_label_shuffled", "R3"): 1,
     }
     report = build_ladder_report(
         _cells(flipped),
@@ -176,6 +176,60 @@ def test_ladder_refuses_holdouts_and_incomplete_matrices() -> None:
         load_cells([raw])
     with pytest.raises(GateDataError, match="unknown family"):
         build_ladder_report(cells, dataset="nfy_article_rerank", skip_r1=["trees"])
+
+
+def test_an_unsupported_family_is_listed_and_left_out() -> None:
+    cells = [cell for cell in _cells() if not cell.design_id.startswith("embedding_")]
+    reason = "embedding ladder needs feat__profile__emb* and feat__item__emb*"
+    report = build_ladder_report(
+        cells, dataset="nfy_article_rerank_demo", unsupported={"embedding": reason}
+    )
+    assert report.status == "pass"
+    assert report.family_set == ["lgbm", "neural", "linear_reweight"]
+    assert report.family_key == family_key()
+    assert report.unsupported_families == {"embedding": reason}
+    assert report.expected_cells == 6 * 3 * 2
+    assert report.kendall_n == 6
+    assert {order.family for order in report.orders} == {"lgbm", "neural", "linear_reweight"}
+    from amt.ladder import render_ladder_markdown
+
+    assert f"- embedding: {reason}" in render_ladder_markdown(report)
+    with pytest.raises(GateDataError, match="unexpected"):
+        build_ladder_report(_cells(), dataset="x", unsupported={"embedding": reason})
+    with pytest.raises(GateDataError, match="unknown unsupported"):
+        build_ladder_report(cells, dataset="x", unsupported={"trees": reason})
+    with pytest.raises(GateDataError, match="unknown family"):
+        build_ladder_report(
+            cells, dataset="x", skip_r1=["embedding"], unsupported={"embedding": reason}
+        )
+
+
+def test_a_design_without_its_columns_reports_unsupported() -> None:
+    from harness.ladder import UnsupportedDataset
+    from harness.train import train_ranker
+
+    rng = np.random.default_rng(0)
+    rows = [
+        {key: value for key, value in row.items() if "__emb" not in key}
+        for row in _rows(rng, 0, 40)
+    ]
+    frame = RankingFrame(rows)
+    with pytest.raises(UnsupportedDataset):
+        make_ladder_ranker("embedding_trained").fit(
+            frame, frame, FitContext(seed=0, deadline=time.monotonic() + 60)
+        )
+    result = train_ranker(
+        ranker=make_ladder_ranker("embedding_random_projection"),
+        train=frame,
+        evaluation=frame,
+        seed=0,
+        rung="R1",
+        deadline_s=60,
+        require_loss=False,
+        check_determinism=False,
+    )
+    assert result.status == "unsupported"
+    assert "feat__profile__emb" in (result.reason or "")
 
 
 def test_each_known_good_design_beats_its_pair() -> None:

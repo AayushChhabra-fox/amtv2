@@ -101,7 +101,7 @@ Forty-eight cells, three matrix jobs: the eight design ids below, rungs R1–R3,
 | `lgbm` | `lgbm_full` | `lgbm_recency_category` |
 | `neural` | `neural_normal` | `neural_label_shuffled` |
 | `embedding` | `embedding_trained` | `embedding_random_projection` |
-| `linear_reweight` | `linear_fitted` | `linear_production_weights` |
+| `linear_reweight` | `linear_fitted` | `linear_label_shuffled` |
 
 Pass is exit `0`: good above bad in every family at R1, R2, and R3, and Kendall tau-b between R1 and R3 at least 0.6. Sign it once. Later NFY runs reuse this signature until the report or the family set changes.
 

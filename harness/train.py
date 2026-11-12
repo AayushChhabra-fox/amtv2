@@ -58,7 +58,7 @@ from harness.data.sampling import choose_query_ids, query_ids_hash, query_times 
 from harness.deps import activate_candidate_requirements  # noqa: E402
 from harness.evaluate import metrics, paired_day_blocked_delta  # noqa: E402
 from harness.interface import FitContext, RankingFrame  # noqa: E402
-from harness.ladder import LADDER_IDS, make_ladder_ranker  # noqa: E402
+from harness.ladder import LADDER_IDS, UnsupportedDataset, make_ladder_ranker  # noqa: E402
 from harness.latency import LATENCY_NODE_TYPE, latency_p95_ms  # noqa: E402
 
 DEADLINES = {"R0": 600, "R1": 1800, "R2": 5400, "R3": 14400}
@@ -289,6 +289,11 @@ def train_ranker(
         result.status = "ok"
         result.reason = None
         result.tags["latency_node_type"] = os.environ.get("AMT_NODE_TYPE", LATENCY_NODE_TYPE)
+        return result
+    except UnsupportedDataset as exc:
+        result.status = "unsupported"
+        result.reason = str(exc)
+        result.metrics = {}
         return result
     except Exception as exc:
         result.reason = str(exc)
@@ -539,7 +544,7 @@ def _execute(args: argparse.Namespace) -> None:
         token_path = Path(args.confirm_token)
         if token_path.is_file():
             token_path.unlink()
-    if result.status != "ok":
+    if result.status not in {"ok", "unsupported"}:
         raise SystemExit(1)
 
 

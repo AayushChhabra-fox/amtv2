@@ -160,11 +160,11 @@ Gate G2, once per dataset and family set. `--dataset` may be `datasets/nfy_artic
 | `lgbm` | `lgbm_full` | `lgbm_recency_category` |
 | `neural` | `neural_normal` | `neural_label_shuffled` |
 | `embedding` | `embedding_trained` | `embedding_random_projection` |
-| `linear_reweight` | `linear_fitted` | `linear_production_weights` |
+| `linear_reweight` | `linear_fitted` | `linear_label_shuffled` |
 
 The `baseline` parameter of each job is the design id. `harness/train.py` treats that id as a ladder ranker.
 
-A cell is `design_id`, `rung`, `seed`, `split`, and `metric`. The report passes when the good design ranks above the bad one in each family at every checked rung, and Kendall tau-b between the R1 and R3 scores is at least 0.6. Reports land in `gates/g2/<dataset>/<family-key>/`, where the family key is the sorted family names joined with `+` (`embedding+lgbm+linear_reweight+neural`).
+A cell is `design_id`, `rung`, `seed`, `split`, and `metric`. The report passes when the good design ranks above the bad one in each family at every checked rung, and Kendall tau-b between the R1 and R3 scores is at least 0.6. A design that needs columns the dataset lacks logs `status=unsupported` instead of failing. When every cell of a family is unsupported, the report lists the family with the reason and checks the others. The NFY specs have no embedding columns, so `embedding` is listed there. Reports land in `gates/g2/<dataset>/<family-key>/`, where the family key is the sorted family names joined with `+` (`embedding+lgbm+linear_reweight+neural`).
 
 `--skip-r1 FAMILY` drops R1 from the order check for that family. Repeat the flag for more than one family. `--r1-train-fraction` records the R1 sample fraction used for a re-run. Both values are stored on the report and on the G2 signature. A failure only at R1 is the case for skipping R1. A low tau with the within-family order intact is the case for a higher R1 fraction. A failure at R2 or R3 stays a failure.
 

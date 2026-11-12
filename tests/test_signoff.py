@@ -117,6 +117,28 @@ def test_g2_is_reused_for_the_dataset_and_family_set(tmp_path: Path) -> None:
     assert not g2_is_current(tmp_path, "nfy_article_rerank")
 
 
+def test_g2_signs_a_ladder_with_an_unsupported_family(tmp_path: Path) -> None:
+    cells = [cell for cell in ladder_cells() if not cell.design_id.startswith("embedding_")]
+    reason = "embedding ladder needs feat__profile__emb* and feat__item__emb*"
+    report = build_ladder_report(cells, dataset="demo", unsupported={"embedding": reason})
+    write_ladder_report(tmp_path, report)
+    record = sign_g2(tmp_path, "demo", "Grace Hopper", signed_at=SIGNED)
+    assert record.family_set == ["lgbm", "neural", "linear_reweight"]
+    assert record.unsupported_families == {"embedding": reason}
+    assert g2_is_current(tmp_path, "demo")
+
+    stored = tmp_path / "gates" / "g2" / "demo" / family_key() / "g2.json"
+    edited = json.loads(stored.read_text())
+    edited["unsupported_families"] = {}
+    stored.write_text(json.dumps(edited))
+    assert not g2_is_current(tmp_path, "demo")
+
+    dropped = report.model_copy(update={"family_set": ["lgbm", "neural"]})
+    write_ladder_report(tmp_path, dropped)
+    with pytest.raises(SignoffError, match="different family set"):
+        sign_g2(tmp_path, "demo", "Grace Hopper", signed_at=SIGNED)
+
+
 def test_search_brief_stops_until_both_gates_are_signed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

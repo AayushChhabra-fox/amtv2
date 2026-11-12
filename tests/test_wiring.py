@@ -322,6 +322,27 @@ def test_spec_is_sent_relative_to_the_bundle(tmp_path: Path) -> None:
     assert _bundle_relative_spec(tmp_path, {"spec": "/elsewhere/x"})["spec"] == "/elsewhere/x"
 
 
+def test_unsupported_families_need_every_newest_cell_unsupported() -> None:
+    from amt.batch import _newest, _unsupported_families
+    from amt.ladder import ladder_jobs
+
+    reason = "embedding ladder needs feat__profile__emb* and feat__item__emb*"
+
+    def row(job, status: str, start: int) -> dict:
+        tags = {"node_id": job.candidate_id, "family": job.family, "rung": job.rung}
+        tags |= {"seed": str(job.seed), "status": status, "failure_reason": reason}
+        return {"metric": None, "start_time": start, "tags": tags}
+
+    embedding = [job for job in ladder_jobs() if job.family == "embedding"]
+    rows = [row(job, "failed", 1) for job in embedding]
+    rows += [row(job, "unsupported", 2) for job in embedding]
+    assert _unsupported_families(_newest(rows, scored=False)) == {"embedding": reason}
+    retried = rows + [row(embedding[-1], "failed", 3)]
+    assert _unsupported_families(_newest(retried, scored=False)) == {}
+    missing = [row(job, "unsupported", 2) for job in embedding[1:]]
+    assert _unsupported_families(_newest(missing, scored=False)) == {}
+
+
 def test_long_idempotency_tokens_are_shortened_stably() -> None:
     from amt.jobs_backend import _api_token
 

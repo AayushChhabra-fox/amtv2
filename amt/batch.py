@@ -79,8 +79,8 @@ def collect_ladder(
     r1_train_fraction: float | None,
 ) -> tuple[str, Path]:
     run_name = f"ladder-{dataset}"
-    rows = _collect(root, run_name)
-    cells = [_ladder_cell(row) for row in rows]
+    rows = _search(root, run_name)
+    cells = [_ladder_cell(row) for row in _newest(rows, scored=True)]
     path = root / "runs" / run_name / "ladder.json"
     path.write_text(json.dumps(cells, indent=2) + "\n", encoding="utf-8")
     from amt.ladder import load_cells
@@ -90,6 +90,7 @@ def collect_ladder(
         dataset=dataset,
         skip_r1=skip_r1,
         r1_train_fraction=r1_train_fraction,
+        unsupported=_unsupported_families(_newest(rows, scored=False)),
     )
     written = write_ladder_report(root, report)
     return report.status, written
@@ -246,23 +247,52 @@ def _base_params(
 
 
 def _collect(root: Path, run_name: str) -> list[dict]:
+    return _newest(_search(root, run_name), scored=True)
+
+
+def _search(root: Path, run_name: str) -> list[dict]:
     backend = make_backend(root)
     state = _load_state(root, run_name)
     for run_id in state.values():
         backend.wait(str(run_id))
-    rows = backend.search_runs(tags={"batch": run_name})  # type: ignore[attr-defined]
-    # A resubmitted rung logs every cell again, and a failed cell logs no metric:
-    # keep the newest scored run per cell.
+    return backend.search_runs(tags={"batch": run_name})  # type: ignore[attr-defined]
+
+
+def _newest(rows: list[dict], *, scored: bool) -> list[dict]:
+    """A resubmitted rung logs every cell again, and a failed cell logs no metric:
+    keep the newest run per cell, only among scored runs when ``scored``."""
+
     latest: dict[tuple[str, str, str], dict] = {}
     for row in rows:
         tags = row.get("tags") or {}
-        if _cell_id(tags) == "matrix" or row.get("metric") is None:
+        if _cell_id(tags) == "matrix" or (scored and row.get("metric") is None):
             continue
-        key = (_cell_id(tags), str(tags.get("rung")), str(tags.get("seed")))
+        key = _cell_key(row)
         kept = latest.get(key)
         if kept is None or int(row.get("start_time") or 0) >= int(kept.get("start_time") or 0):
             latest[key] = row
     return list(latest.values())
+
+
+def _cell_key(row: dict) -> tuple[str, str, str]:
+    tags = row.get("tags") or {}
+    return (_cell_id(tags), str(tags.get("rung")), str(tags.get("seed")))
+
+
+def _unsupported_families(rows: list[dict]) -> dict[str, str]:
+    """Families whose every ladder cell last reported the dataset unsupported."""
+
+    newest = {_cell_key(row): row for row in rows}
+    by_family: dict[str, list[dict | None]] = {}
+    for job in ladder_jobs():
+        key = (job.candidate_id, job.rung, str(job.seed))
+        by_family.setdefault(job.family, []).append(newest.get(key))
+    found: dict[str, str] = {}
+    for family, cells in by_family.items():
+        tags = [(row or {}).get("tags") or {} for row in cells]
+        if all(tag.get("status") == "unsupported" for tag in tags):
+            found[family] = str(tags[0].get("failure_reason") or "unsupported")
+    return found
 
 
 def _cell_id(tags: dict) -> str:

@@ -406,9 +406,9 @@ R0 checks that the model imports, the loss decreases, the score shape is correct
   - **LightGBM**: full features versus recency plus category only.
   - **Neural ranker** (a deep cross network, DCN-v2, or a multilayer perceptron over the same features): normal training versus label-shuffled training.
   - **Embedding similarity** (user profile embedding against article embedding): trained versus random projection.
-  - **Learned linear reweighting of production signals**: fitted versus the production weights.
+  - **Learned linear reweighting of production signals**: fitted on the labels versus fitted on shuffled labels. (The production score is not a bad arm: it is the tuned production model.)
 
-  Within each family, the ordering must hold at every rung, and Kendall τ between R1 and R3 across all 8 designs must be at least 0.6. If it is lower, raise R1's data fraction, or skip R1 for that family, and re-validate. A human signs it off at gate G2. The result is reused across runs for the same dataset and family set.
+  Within each family, the ordering must hold at every rung, and Kendall τ between R1 and R3 across all 8 designs must be at least 0.6. A family whose designs need columns the dataset lacks (NFY has no point-in-time embeddings) is listed as unsupported and left out. If it is lower, raise R1's data fraction, or skip R1 for that family, and re-validate. A human signs it off at gate G2. The result is reused across runs for the same dataset and family set.
 - Done when: the noise report and the ladder report are both signed off.
 
 ### 5.5 M5: Agent layer

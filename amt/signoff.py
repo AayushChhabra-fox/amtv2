@@ -56,6 +56,7 @@ class Signoff(BaseModel):
     evaluation: str | None = None
     family_set: list[str] = Field(default_factory=list)
     family_key: str | None = None
+    unsupported_families: dict[str, str] = Field(default_factory=dict)
     kendall_tau: float | None = None
     skip_r1: list[str] = Field(default_factory=list)
     r1_train_fraction: float | None = None
@@ -167,7 +168,7 @@ def sign_g2(
     if report.status != "pass":
         detail = " ".join(report.remediation) or report.status
         raise SignoffError(f"G2 is not ready to sign ({report.status}): {detail}")
-    if report.family_key != family_key() or report.family_set != ladder_families():
+    if not _covers_catalog(report):
         raise SignoffError("the ladder report is for a different family set")
     record = Signoff(
         gate="G2",
@@ -177,6 +178,7 @@ def sign_g2(
         dataset=dataset,
         family_set=list(report.family_set),
         family_key=report.family_key,
+        unsupported_families=dict(report.unsupported_families),
         kendall_tau=report.kendall_tau,
         skip_r1=list(report.skip_r1),
         r1_train_fraction=report.r1_train_fraction,
@@ -228,17 +230,28 @@ def g2_is_current(root: Path, dataset: str) -> bool:
     record = load_signoff(g2_dir(root, dataset) / "g2.json")
     if record is None or record.gate != "G2":
         return False
-    if record.family_key != family_key() or record.family_set != ladder_families():
-        return False
     try:
         report, digest = load_ladder_report(root, dataset)
     except (OSError, ValueError):
         return False
     if record.report_sha256 != digest or report.status != "pass":
         return False
+    if not _covers_catalog(report) or record.family_set != report.family_set:
+        return False
+    if record.unsupported_families != report.unsupported_families:
+        return False
     if record.skip_r1 != report.skip_r1:
         return False
     return record.kendall_tau == report.kendall_tau
+
+
+def _covers_catalog(report: LadderReport) -> bool:
+    """Checked families are the catalog minus the ones the dataset cannot run."""
+
+    if report.family_key != family_key() or not report.family_set:
+        return False
+    expected = [family for family in ladder_families() if family not in report.unsupported_families]
+    return report.family_set == expected
 
 
 def search_block_reason(root: Path, brief: Brief, brief_path: Path) -> str | None:

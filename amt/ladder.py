@@ -5,8 +5,10 @@ Each known-good / known-bad pair is scored at R1–R3 with two seeds on
 at every rung. Kendall tau-b between the R1 and R3 scores of all eight
 designs must be at least 0.6. A failure only at R1 can be re-validated by
 skipping R1 for that family. A low tau with the within-family order intact
-is re-validated by raising R1's train fraction. The signed result is reused
-for later runs on the same dataset and family set.
+is re-validated by raising R1's train fraction. A family whose designs the
+dataset cannot run (every cell reported unsupported) is listed with the
+reason and left out of the checks. The signed result is reused for later runs
+on the same dataset and family set.
 """
 
 from __future__ import annotations
@@ -75,6 +77,7 @@ class LadderReport(BaseModel):
     dataset: str
     family_set: list[str]
     family_key: str
+    unsupported_families: dict[str, str] = Field(default_factory=dict)
     status: Literal["pass", "revise", "fail", "incomplete"]
     kendall_tau: float | None = None
     kendall_min: float = KENDALL_MIN
@@ -149,15 +152,21 @@ def build_ladder_report(
     dataset: str,
     skip_r1: list[str] | None = None,
     r1_train_fraction: float | None = None,
+    unsupported: dict[str, str] | None = None,
 ) -> LadderReport:
     """Check within-family order and the R1–R3 Kendall tau."""
 
-    skipped = _clean_skip(skip_r1 or [])
-    families = ladder_families()
+    unsupported = dict(unsupported or {})
+    unknown = sorted(set(unsupported) - set(ladder_families()))
+    if unknown:
+        raise GateDataError(f"unknown unsupported ladder family {', '.join(unknown)}")
+    families = [family for family in ladder_families() if family not in unsupported]
+    designs = [design for design in LADDER_DESIGNS if design.family in families]
+    skipped = _clean_skip(skip_r1 or [], families)
     pairs = designs_by_family()
     wanted = [
         (design.design_id, rung, seed)
-        for design in LADDER_DESIGNS
+        for design in designs
         for rung in LADDER_RUNGS
         for seed in LADDER_SEEDS
     ]
@@ -181,16 +190,16 @@ def build_ladder_report(
             rung=rung,
             metric=_round(means[(design.design_id, rung)]),
         )
-        for design in LADDER_DESIGNS
+        for design in designs
         for rung in LADDER_RUNGS
         if (design.design_id, rung) in means
     ]
-    orders = _orders(pairs, means, skipped) if not missing else []
+    orders = _orders(families, pairs, means, skipped) if not missing else []
 
     tau: float | None = None
     kendall_n = 0
     if not missing:
-        ranked = [design for design in LADDER_DESIGNS if design.family not in skipped]
+        ranked = [design for design in designs if design.family not in skipped]
         kendall_n = len(ranked)
         if kendall_n >= 2:
             tau = _round(
@@ -205,14 +214,17 @@ def build_ladder_report(
         orders=orders,
         tau=tau,
         kendall_n=kendall_n,
-        ranked_ids=[design.design_id for design in LADDER_DESIGNS if design.family not in skipped],
+        ranked_ids=[design.design_id for design in designs if design.family not in skipped],
         means=means,
         r1_train_fraction=r1_train_fraction,
     )
+    if not families:
+        remediation, status = ["The dataset supports none of the ladder families."], "fail"
     return LadderReport(
         dataset=dataset,
         family_set=families,
         family_key=family_key(),
+        unsupported_families=unsupported,
         status=status,
         kendall_tau=tau,
         kendall_n=kendall_n,
@@ -265,6 +277,12 @@ def render_ladder_markdown(report: LadderReport) -> str:
         f" (minimum {report.kendall_min:.1f}, n={report.kendall_n}).",
         "",
     ]
+    if report.unsupported_families:
+        lines.append("Not supported by this dataset, so not checked:")
+        lines.append("")
+        for family, reason in sorted(report.unsupported_families.items()):
+            lines.append(f"- {family}: {reason}")
+        lines.append("")
     if report.skip_r1:
         lines.append(f"R1 skipped for: {', '.join(report.skip_r1)}.")
         lines.append("")
@@ -384,12 +402,13 @@ def _judge(
 
 
 def _orders(
+    families: list[str],
     pairs: dict[str, tuple[LadderDesign, LadderDesign]],
     means: dict[tuple[str, str], float],
     skipped: list[str],
 ) -> list[FamilyOrder]:
     orders: list[FamilyOrder] = []
-    for family in ladder_families():
+    for family in families:
         good, bad = pairs[family]
         for rung in LADDER_RUNGS:
             checked = not (rung == "R1" and family in skipped)
@@ -417,8 +436,8 @@ def _means(cells: list[LadderCell]) -> dict[tuple[str, str], float]:
     return {key: sum(values) / len(values) for key, values in grouped.items()}
 
 
-def _clean_skip(skip_r1: list[str]) -> list[str]:
-    known = set(ladder_families())
+def _clean_skip(skip_r1: list[str], families: list[str]) -> list[str]:
+    known = set(families)
     cleaned: list[str] = []
     for family in skip_r1:
         if family not in known:

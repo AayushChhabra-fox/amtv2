@@ -8,8 +8,11 @@ contract columns it is given:
 - A small MLP, trained on the labels or on a seed-shuffled copy of them.
 - Dot-product similarity of ``feat__profile__emb*`` and ``feat__item__emb*``,
   with a fitted diagonal, or after a seeded permutation of the item side.
-- A linear reweighting of ``feat__prod_signals__*``, or the ``ref.production``
-  column left as it is.
+- A linear reweighting of ``feat__prod_signals__*``, fit on the labels or on a
+  seed-shuffled copy of them.
+
+A design whose input columns the dataset does not have raises
+``UnsupportedDataset``; its family is left out of that dataset's ladder.
 
 Callers pass ``search_val`` frames. These classes do not open a holdout.
 """
@@ -23,10 +26,13 @@ import numpy as np
 
 from harness.baselines.lgbm_reference import LGBMReferenceRanker
 from harness.baselines.persist import load_ranker, save_ranker
-from harness.data.contract import ref_column
 from harness.interface import FitContext, RankingFrame
 
 Role = Literal["good", "bad"]
+
+
+class UnsupportedDataset(ValueError):
+    """The dataset has no columns of the kind this design reads."""
 
 
 @dataclass(frozen=True)
@@ -83,10 +89,10 @@ LADDER_DESIGNS: tuple[LadderDesign, ...] = (
         "Linear weights fit on the production signals",
     ),
     LadderDesign(
-        "linear_production_weights",
+        "linear_label_shuffled",
         "linear_reweight",
         "bad",
-        "The production score, with its weights left unchanged",
+        "Linear weights fit on the production signals with shuffled labels",
     ),
 )
 
@@ -276,14 +282,19 @@ class EmbeddingRandomProjectionRanker:
 class LinearFittedRanker:
     """Least-squares weights on the production-signal columns."""
 
+    shuffle_labels = False
+
     def __init__(self) -> None:
         self.columns: list[str] = []
         self.weights: np.ndarray | None = None
 
     def fit(self, train: RankingFrame, valid: RankingFrame, ctx: FitContext) -> None:
-        del valid, ctx
+        del valid
         self.columns = _prod_signals(train.numeric_feature_names())
-        self.weights = _ridge(_align(train, self.columns), train.labels())
+        labels = np.asarray(train.labels(), dtype=float)
+        if self.shuffle_labels:
+            labels = np.random.default_rng(int(ctx.seed) + 17).permutation(labels)
+        self.weights = _ridge(_align(train, self.columns), labels)
 
     def score(self, frame: RankingFrame) -> np.ndarray:
         if self.weights is None:
@@ -298,29 +309,13 @@ class LinearFittedRanker:
         return load_ranker(path, cls)
 
 
-class LinearProductionRanker:
-    """Score with the production reference column. Nothing is fit."""
+class LinearShuffledRanker(LinearFittedRanker):
+    """The same ridge fit, on a permutation of the training labels."""
 
-    def __init__(self) -> None:
-        self.column = ref_column("production")
-
-    def fit(self, train: RankingFrame, valid: RankingFrame, ctx: FitContext) -> None:
-        del train, valid, ctx
-
-    def score(self, frame: RankingFrame) -> np.ndarray:
-        if self.column not in frame.column_names():
-            raise KeyError(self.column)
-        values = np.zeros(len(frame), dtype=float)
-        for index, row in enumerate(frame.rows):
-            raw = row.get(self.column)
-            values[index] = 0.0 if raw is None else float(raw)
-        return values
-
-    def save(self, path: str) -> None:
-        save_ranker(self, path)
+    shuffle_labels = True
 
     @classmethod
-    def load(cls, path: str) -> LinearProductionRanker:
+    def load(cls, path: str) -> LinearShuffledRanker:
         return load_ranker(path, cls)
 
 
@@ -332,7 +327,7 @@ _RANKERS: dict[str, type] = {
     "embedding_trained": EmbeddingTrainedRanker,
     "embedding_random_projection": EmbeddingRandomProjectionRanker,
     "linear_fitted": LinearFittedRanker,
-    "linear_production_weights": LinearProductionRanker,
+    "linear_label_shuffled": LinearShuffledRanker,
 }
 
 
@@ -419,7 +414,7 @@ def _recency_category(names: list[str]) -> list[str]:
 def _prod_signals(names: list[str]) -> list[str]:
     kept = [name for name in names if name.startswith("feat__prod_signals__")]
     if not kept:
-        raise ValueError("linear reweighting needs feat__prod_signals__* columns")
+        raise UnsupportedDataset("linear reweighting needs feat__prod_signals__* columns")
     return kept
 
 
@@ -436,7 +431,7 @@ def _embedding_pairs(names: list[str]) -> list[tuple[str, str]]:
             item[suffix] = name
     keys = sorted(set(profile) & set(item))
     if not keys:
-        raise ValueError("embedding ladder needs feat__profile__emb* and feat__item__emb*")
+        raise UnsupportedDataset("embedding ladder needs feat__profile__emb* and feat__item__emb*")
     return [(profile[key], item[key]) for key in keys]
 
 
