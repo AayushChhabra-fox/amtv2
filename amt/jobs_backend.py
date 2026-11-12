@@ -281,10 +281,17 @@ class DatabricksJobs:
         return found[0] if found else None
 
     def search_runs(self, *, tags: dict) -> list[dict]:
-        experiment_id = experiment_id_by_name(self.root, _experiment_from_tags(tags))
+        tags = dict(tags)
+        named = str(tags.pop("experiment", "") or "")
+        if named:
+            experiment_ids = [experiment_id_by_name(self.root, named)]
+        else:
+            experiment_ids = self._amt_experiment_ids()
+        if not experiment_ids:
+            return []
         clauses = [f"tags.{key} = '{value}'" for key, value in tags.items() if value != ""]
         body = {
-            "experiment_ids": [experiment_id],
+            "experiment_ids": experiment_ids,
             "filter": " and ".join(clauses) if clauses else "",
             "max_results": 1000,
             "order_by": ["attributes.start_time DESC"],
@@ -315,6 +322,32 @@ class DatabricksJobs:
             token = response.get("next_page_token")
             if not token:
                 return found
+            body["page_token"] = token
+
+    def _amt_experiment_ids(self) -> list[str]:
+        """Every experiment under the AMT root; each brief and run logs to its own."""
+
+        root = self.settings.experiment_root.rstrip("/")
+        body: dict = {"filter": f"name LIKE '{root}/%'", "max_results": 1000}
+        ids: list[str] = []
+        while True:
+            response = _run_json(
+                [
+                    databricks_bin(),
+                    "api",
+                    "post",
+                    "/api/2.0/mlflow/experiments/search",
+                    "--json",
+                    json.dumps(body),
+                ],
+                cwd=self.root,
+            )
+            ids.extend(
+                str(item["experiment_id"]) for item in response.get("experiments") or []
+            )
+            token = response.get("next_page_token")
+            if not token:
+                return ids
             body["page_token"] = token
 
 
@@ -481,10 +514,6 @@ def _metric_row(mlflow_run_id: str | None, metrics: dict, tags: dict) -> dict:
         if key in metrics:
             found[key] = metrics[key]
     return found
-
-
-def _experiment_from_tags(tags: dict) -> str:
-    return str(tags.get("experiment") or EXPERIMENT_NAME)
 
 
 def _fake_metrics(root: Path) -> dict:
