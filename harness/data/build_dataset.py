@@ -16,7 +16,30 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-_ROOT = Path(__file__).resolve().parents[2]
+
+def _bundle_root() -> Path:
+    """Directory that contains ``harness/``. Databricks may copy the entry script."""
+
+    script = globals().get("__file__")
+    if script:
+        resolved = Path(script).resolve()
+        for parent in resolved.parents:
+            if (parent / "harness").is_dir() and (parent / "datasets").is_dir():
+                return parent
+    argv = sys.argv
+    if "--root" in argv:
+        index = argv.index("--root")
+        if index + 1 < len(argv):
+            root = Path(argv[index + 1])
+            if (root / "harness").is_dir():
+                return root
+    env = os.environ.get("AMT_ROOT")
+    if env and (Path(env) / "harness").is_dir():
+        return Path(env)
+    return Path.cwd()
+
+
+_ROOT = _bundle_root()
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
@@ -64,7 +87,7 @@ def project_root() -> Path:
     sibling = Path(harness.__file__).resolve().parent.parent
     if (sibling / "datasets").is_dir():
         return sibling
-    for parent in Path(__file__).resolve().parents:
+    for parent in _bundle_root().parents:
         if (parent / "datasets").is_dir() and (parent / "harness").is_dir():
             return parent
     raise FileNotFoundError("could not find the AMT project root")
@@ -516,7 +539,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--schema", default="")
     parser.add_argument("--sqlite", default="")
     parser.add_argument("--skip-checks", action="store_true")
+    parser.add_argument("--root", default="")
     args = parser.parse_args(argv)
+    if args.root:
+        os.environ.setdefault("AMT_ROOT", args.root)
+        if args.root not in sys.path:
+            sys.path.insert(0, args.root)
     spec = load_spec(resolve_spec(args.spec))
     catalog = args.catalog or spec.output.catalog
     schema = args.schema or spec.output.schema_name
