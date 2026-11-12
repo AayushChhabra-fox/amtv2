@@ -157,6 +157,32 @@ def test_failed_matrix_rung_is_resubmitted(tmp_path: Path, monkeypatch) -> None:
     assert all(f"{key}:retry-{first[key]}" in tokens for key in first)
 
 
+def test_collect_keeps_the_newest_scored_run_per_cell(tmp_path: Path, monkeypatch) -> None:
+    import amt.batch
+
+    def row(candidate: str, metric: float | None, start: int) -> dict:
+        tags = {"candidate_id": candidate, "rung": "R0", "seed": "0"}
+        return {"metric": metric, "start_time": start, "tags": tags}
+
+    rows = [
+        row("random", 0.5, 3),
+        row("lgbm", None, 3),
+        row("random", 0.4, 1),
+        row("matrix", 0.1, 2),
+    ]
+
+    class _Backend:
+        def wait(self, _run_id):
+            return {}
+
+        def search_runs(self, *, tags):
+            return rows
+
+    monkeypatch.setattr(amt.batch, "make_backend", lambda _root: _Backend())
+    collected = amt.batch._collect(tmp_path, "round0-x")
+    assert [(row["tags"]["candidate_id"], row["metric"]) for row in collected] == [("random", 0.5)]
+
+
 def test_volume_calls_use_dbfs_uris(tmp_path: Path, monkeypatch) -> None:
     import subprocess
 
@@ -274,7 +300,9 @@ def test_fixed_cluster_payload_has_no_new_cluster() -> None:
     )
     assert body["tasks"][0]["existing_cluster_id"] == "cluster-1"
     assert "new_cluster" not in body["tasks"][0]
-    assert "libraries" not in body["tasks"][0]
+    libraries = body["tasks"][0]["libraries"]
+    assert {lib["pypi"]["package"] for lib in libraries} == {"lightgbm", "mlflow"}
+    assert all("whl" not in lib for lib in libraries)
     rendered = " ".join(body["tasks"][0]["spark_python_task"]["parameters"])
     assert "whl" not in rendered
 

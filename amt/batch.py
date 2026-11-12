@@ -250,11 +250,18 @@ def _collect(root: Path, run_name: str) -> list[dict]:
     for run_id in state.values():
         backend.wait(str(run_id))
     rows = backend.search_runs(tags={"batch": run_name})  # type: ignore[attr-defined]
-    return [
-        row
-        for row in rows
-        if str((row.get("tags") or {}).get("candidate_id") or "") != "matrix"
-    ]
+    # A resubmitted rung logs every cell again, and a failed cell logs no metric:
+    # keep the newest scored run per cell.
+    latest: dict[tuple[str, str, str], dict] = {}
+    for row in rows:
+        tags = row.get("tags") or {}
+        if str(tags.get("candidate_id") or "") == "matrix" or row.get("metric") is None:
+            continue
+        key = (str(tags.get("candidate_id")), str(tags.get("rung")), str(tags.get("seed")))
+        kept = latest.get(key)
+        if kept is None or int(row.get("start_time") or 0) >= int(kept.get("start_time") or 0):
+            latest[key] = row
+    return list(latest.values())
 
 
 def _noise_cell(row: dict) -> dict:

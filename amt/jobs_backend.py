@@ -286,30 +286,36 @@ class DatabricksJobs:
         body = {
             "experiment_ids": [experiment_id],
             "filter": " and ".join(clauses) if clauses else "",
-            "max_results": 50,
+            "max_results": 1000,
             "order_by": ["attributes.start_time DESC"],
         }
         if not body["filter"]:
             del body["filter"]
-        response = _run_json(
-            [
-                databricks_bin(),
-                "api",
-                "post",
-                "/api/2.0/mlflow/runs/search",
-                "--json",
-                json.dumps(body),
-            ],
-            cwd=self.root,
-        )
         found: list[dict] = []
-        for run in response.get("runs") or []:
-            info = run.get("info") or {}
-            data = run.get("data") or {}
-            metrics = {item["key"]: item["value"] for item in data.get("metrics", [])}
-            run_tags = {item["key"]: item["value"] for item in data.get("tags", [])}
-            found.append(_metric_row(info.get("run_id"), metrics, run_tags))
-        return found
+        while True:
+            response = _run_json(
+                [
+                    databricks_bin(),
+                    "api",
+                    "post",
+                    "/api/2.0/mlflow/runs/search",
+                    "--json",
+                    json.dumps(body),
+                ],
+                cwd=self.root,
+            )
+            for run in response.get("runs") or []:
+                info = run.get("info") or {}
+                data = run.get("data") or {}
+                metrics = {item["key"]: item["value"] for item in data.get("metrics", [])}
+                run_tags = {item["key"]: item["value"] for item in data.get("tags", [])}
+                row = _metric_row(info.get("run_id"), metrics, run_tags)
+                row["start_time"] = int(info.get("start_time") or 0)
+                found.append(row)
+            token = response.get("next_page_token")
+            if not token:
+                return found
+            body["page_token"] = token
 
 
 def _bundle_relative_spec(root: Path, params: dict) -> dict:
@@ -347,7 +353,8 @@ def existing_cluster_payload(
     idempotency_token: str,
     settings,
 ) -> dict:
-    """One-time run on an existing cluster. No ``new_cluster`` and no wheel library."""
+    """One-time run on an existing cluster. No ``new_cluster``; PyPI libraries but no wheel,
+    since the code runs from the bundle files."""
 
     path = REPO / "resources" / f"{job}.job.yml"
     payload = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -375,16 +382,18 @@ def existing_cluster_payload(
             index = rendered.index("--root") + 1
             if index < len(rendered) and not rendered[index]:
                 rendered[index] = workspace_path
+    run_task = {
+        "task_key": task["task_key"],
+        "existing_cluster_id": cluster_id,
+        "spark_python_task": {"python_file": remote_python, "parameters": rendered},
+    }
+    pypi = [lib for lib in task.get("libraries") or [] if "pypi" in lib]
+    if pypi:
+        run_task["libraries"] = pypi
     return {
         "run_name": f"amt_{job}",
         "idempotency_token": idempotency_token,
-        "tasks": [
-            {
-                "task_key": task["task_key"],
-                "existing_cluster_id": cluster_id,
-                "spark_python_task": {"python_file": remote_python, "parameters": rendered},
-            }
-        ],
+        "tasks": [run_task],
     }
 
 
