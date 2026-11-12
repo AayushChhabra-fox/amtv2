@@ -54,7 +54,7 @@ Each item below names a gap in the spec and the fix this plan adopts.
 9. **The budget is in GPU-hours.** Most strong rankers here (LightGBM) run on CPU, and Databricks bills in DBUs. *Fix:* budget in DBUs plus a wall-clock cap per rung. Live spend is estimated as wall-clock × cluster DBU rate and reconciled later against `system.billing.usage` by job run tag.
 10. **There is one git worktree per candidate.** That adds sync overhead with Databricks bundles for little isolation gain. *Fix:* use plain `candidates/<id>/` directories, with write scope enforced by a hook and a pre-flight path check. Each batch is committed, the bundle is deployed once, and the git SHA is tagged on every MLflow run. Worktrees can be added later if parallel implementers collide.
 11. **Two sources of truth (MLflow and the ledger file).** *Fix:* MLflow holds runs and metrics. `ledger/results.jsonl` is append-only and written **only** by scripts (pruner and orchestrator), never by agents.
-12. **"Private" splits are not actually enforced.** Agents can read harness code and may hold SQL access. *Fix:* candidate code never receives holdout frames. It cannot do I/O beyond the frames passed to `fit` and `score`; a static check rejects `spark.`, table names, `open()` outside its directory, and network calls. Confirmation runs in a separate job that only the orchestrator triggers.
+12. **"Private" splits are not actually enforced.** Agents can read harness code and may hold SQL access. *Fix:* candidate code never receives holdout frames. It cannot do I/O beyond the frames passed to `fit` and `score`; a static check rejects `spark.`, table names, `open()` outside its directory, and network calls. Extra libraries are exact pins in `candidates/<id>/requirements.txt`, installed by the harness, not by the candidate. Confirmation runs in a separate job that only the orchestrator triggers.
 13. **The serving latency benchmark is undefined.** *Fix:* p95 latency to score one request of 100 candidates on a fixed single-node CPU type, single-threaded, with features already materialised. It is reported relative to the reference model.
 14. **The fidelity check needs known-good and known-bad designs per family, but none are named.** *Fix:* section 5.4 defines pairs for each family and a Kendall τ acceptance threshold.
 
@@ -99,6 +99,7 @@ harness/                 read-only to agents; no dataset-specific code
   data/checks.py         generic data checks plus the spec's own checks
   interface.py           Ranker protocol and RankingFrame
   train.py               entry point: --candidate_id --rung --seed --split --batch
+  deps.py                install pinned candidate requirements before fit
   evaluate.py            NDCG@k (graded), MRR, day-blocked paired bootstrap
   latency.py             fixed latency benchmark
   baselines/             reference_score (one per ref.* column), popularity, random, lgbm_reference
@@ -109,6 +110,7 @@ candidates/<id>/
   candidate.yaml         planner output, after the critic's verdict
   spec.md                acceptance criteria and interface notes
   model.py               implements Ranker
+  requirements.txt       optional exact pins; the harness installs them
   debug_log.md           chain of fix attempts
   review.md              ends with "VERDICT: PASS" or "VERDICT: FAIL"
 briefs/nfy_article_rerank.yaml
@@ -125,7 +127,7 @@ tests/
 
 | Role | Reads | Writes | Model guidance |
 | --- | --- | --- | --- |
-| Planner | brief, ledger summary (newest 12 nodes plus best per family), parent node in full when improving | `proposals.yaml` (N candidates) | Strongest reasoning model |
+| Planner | brief, ledger summary (newest 12 nodes plus best per family), parent node in full when improving, plus web search and page fetch for ranking methods | `proposals.yaml` (N candidates), each with optional `references` | Strongest reasoning model |
 | Critic | brief, proposals, ledger summary | verdict per candidate: PASS, REVISE or DROP, with a reason | Different model family from the planner |
 | Implementer | `spec.md`, harness interface, parent `model.py` when improving, fix chain when debugging | `candidates/<id>/*` only | Fast coding model |
 | Reviewer | spec, diff, preflight output, rung metrics | `review.md` with verdict | Different model from the implementer |
@@ -145,7 +147,7 @@ A complexity cue is given by phase: round 1 asks for simple, well-understood des
 ### 3.4 Search loop per brief
 
 1. **Round 0, baselines**: every reference score the dataset spec declares (for NFY, production score and recency), popularity, random and the LightGBM reference, at every rung with 3 seeds. This sets the noise floor and confirms `min_effect`.
-2. **Round 1, diverse drafts**: the planner proposes N=8. The critic keeps K=4, with at least 3 families. Near-duplicates (same family, same feature set) are rejected. Successive halving runs over R1→R2→R3.
+2. **Round 1, diverse drafts**: the planner proposes N=8. The critic keeps K=4, with at least 3 families. Near-duplicates (same family, same feature set) are rejected. The planner may search the web first and must cite pages it used. R1 only drops hard failures and models that are clearly worse than the same-rung baseline. Halving starts at R2, so a model has to look weak twice before it dies. That spends more DBU at R2, because more nodes reach it.
 3. **Rounds 2–3, improve lineages**: take the top 2 lineages. The planner proposes 3 atomic improvements each; the critic keeps 2 each. They run R2→R3, skipping R1 because the family is already validated. Fork-on-plateau: if a lineage's last 2 improvements are each below the noise floor, stop expanding it and spend its budget on one new draft from an unexplored family.
 4. **Round 4, combine**: one blend or stack of the top 2 lineages.
 5. **Confirm**: the top 3 at R3 are retrained with 3 seeds and scored on `select_holdout`. The winner and runner-up, plus the baselines, are scored once on `final_holdout`. The report goes to a human.
@@ -386,7 +388,7 @@ R0 checks that the model imports, the loss decreases, the score shape is correct
   - **Hard kills**: NaN or divergence; a run that terminated with no metrics; measured p95 latency above the brief limit; per-candidate DBU cap exceeded; preflight or review FAIL.
   - **Below-floor kill**, with the threshold tightening at each rung: at R1, kill if the upper bound of Δ is below `-min_effect` (clearly worse). At R2, kill if the upper bound is below 0. At R3, kill if the upper bound is below `min_effect`.
   - **Dominance**: kill A if some B at the same rung has a paired lower bound of (Δ_B − Δ_A) above 0 **and** B's training DBU and latency are both no higher than A's.
-  - **Halving**: among the remaining candidates, keep the top ⌈n/2⌉ by Δ point estimate. One **diversity slot** guarantees that the best surviving node of an otherwise-eliminated family continues past R1.
+  - **Halving**, from R2 onward: among the remaining candidates, keep the top ⌈n/2⌉ by Δ point estimate. R1 does not halve and does not apply dominance. One **diversity slot** at R2 guarantees that the best surviving node of an otherwise-eliminated family continues. More nodes therefore reach R2, and the budget has to cover that extra rung.
   - **Promotion to confirm**: the top 3 at R3 whose Δ lower bound is above 0.
 
   The pruner writes `runs/<id>/rung_<r>_survivors.json` and appends ledger rows with reasons.
@@ -419,7 +421,7 @@ R0 checks that the model imports, the loss decreases, the score shape is correct
   - One-line summaries of the 12 newest ledger nodes plus the best node per family.
   - Sibling summaries for Draft and Improve.
   - The full fix chain for Debug.
-- **Pre-flight checks**, `amt/preflight.py`: static checks first, then the R0 smoke test. The static checks reject `spark`, `dbutils`, table names, network or subprocess calls, file I/O outside the candidate's directory, imports outside the allowlist (numpy, pandas, polars, lightgbm, xgboost, torch, sklearn, sentence-transformers), and any mention of holdout split names.
+- **Pre-flight checks**, `amt/preflight.py`: static checks first, then the R0 smoke test. The static checks reject `spark`, `dbutils`, table names, network or subprocess calls, file I/O outside the candidate's directory, and any mention of holdout split names. Third-party imports are allowed when they are in the base set (numpy, pandas, polars, lightgbm, xgboost, torch, sklearn, sentence-transformers) or declared as exact pins in `candidates/<id>/requirements.txt`. `harness/deps.py` installs those pins before the smoke test and before training. The planner may use web search; cited URLs go on the candidate as `references`.
 - **Orchestrator**, `amt/orchestrator.py`: a resumable state machine. State is persisted to `runs/<id>/state.json` after every transition, `ESCALATE` is reachable from every stage, and submission is idempotent, keyed by `node/rung/seed`.
 
 ```python
@@ -632,6 +634,7 @@ Nothing else blocks on a human. Under the default `approval_mode: none`, every p
 1. What are the budget (DBUs) and the serving latency limit for the NFY reranker?
 2. May a small anonymised sample live on laptops for local R0 runs, or must R0 stay on Databricks?
 3. Who grants write access on `product_api_dev.amt` (catalog/schema owner)?
+4. NFY knowledge base for agents (production scorer code, Zilliz buckets, editorial rules, prior LTR work and the headroom study, Confluence). Deferred until the brief-only evaluation of prompt quality is done; then add it as read-only context for the planner and critic.
 
 ## 10. References
 
