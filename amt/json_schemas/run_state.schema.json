@@ -1,4 +1,199 @@
 {
+  "$defs": {
+    "NodeWork": {
+      "additionalProperties": false,
+      "description": "One node inside a search round. The walking skeleton leaves this empty.",
+      "properties": {
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
+        },
+        "family": {
+          "title": "Family",
+          "type": "string"
+        },
+        "operator": {
+          "default": "draft",
+          "enum": [
+            "draft",
+            "improve",
+            "debug",
+            "ablate",
+            "combine"
+          ],
+          "title": "Operator",
+          "type": "string"
+        },
+        "parent_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Id"
+        },
+        "parents": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Parents",
+          "type": "array"
+        },
+        "claim": {
+          "default": "",
+          "title": "Claim",
+          "type": "string"
+        },
+        "change": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Change"
+        },
+        "fit_argument": {
+          "default": "",
+          "title": "Fit Argument",
+          "type": "string"
+        },
+        "cheap_test": {
+          "default": "",
+          "title": "Cheap Test",
+          "type": "string"
+        },
+        "kill_if": {
+          "default": "",
+          "title": "Kill If",
+          "type": "string"
+        },
+        "est_cost": {
+          "default": 0.1,
+          "minimum": 0,
+          "title": "Est Cost",
+          "type": "number"
+        },
+        "rung": {
+          "default": "R1",
+          "enum": [
+            "R0",
+            "R1",
+            "R2",
+            "R3"
+          ],
+          "title": "Rung",
+          "type": "string"
+        },
+        "seed": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Seed",
+          "type": "integer"
+        },
+        "search_round": {
+          "default": 1,
+          "minimum": 0,
+          "title": "Search Round",
+          "type": "integer"
+        },
+        "status": {
+          "default": "pending",
+          "enum": [
+            "pending",
+            "implemented",
+            "debugging",
+            "ready",
+            "submitted",
+            "kept",
+            "killed",
+            "failed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "debug_attempts": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Debug Attempts",
+          "type": "integer"
+        },
+        "preflight": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Preflight"
+        },
+        "review": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Review"
+        },
+        "delta_point": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Delta Point"
+        },
+        "delta_lo": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Delta Lo"
+        },
+        "delta_hi": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Delta Hi"
+        }
+      },
+      "required": [
+        "node_id",
+        "family"
+      ],
+      "title": "NodeWork",
+      "type": "object"
+    }
+  },
   "additionalProperties": false,
   "description": "Resumable loop state. Settings are K, budget, and approval_mode.",
   "properties": {
@@ -122,6 +317,74 @@
       "default": false,
       "title": "Stop Requested",
       "type": "boolean"
+    },
+    "nodes": {
+      "items": {
+        "$ref": "#/$defs/NodeWork"
+      },
+      "title": "Nodes",
+      "type": "array"
+    },
+    "awaiting_approval": {
+      "default": false,
+      "title": "Awaiting Approval",
+      "type": "boolean"
+    },
+    "approval_gate": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Approval Gate"
+    },
+    "round_operator": {
+      "default": "draft",
+      "enum": [
+        "draft",
+        "improve",
+        "debug",
+        "ablate",
+        "combine"
+      ],
+      "title": "Round Operator",
+      "type": "string"
+    },
+    "critic_revisions": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Critic Revisions",
+      "type": "integer"
+    },
+    "outer_retries": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Outer Retries",
+      "type": "integer"
+    },
+    "promoted": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Promoted",
+      "type": "array"
+    },
+    "rung_index": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Rung Index",
+      "type": "integer"
+    },
+    "improvement_gains": {
+      "items": {
+        "type": "number"
+      },
+      "title": "Improvement Gains",
+      "type": "array"
     }
   },
   "required": [

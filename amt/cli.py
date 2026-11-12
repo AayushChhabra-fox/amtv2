@@ -51,6 +51,9 @@ def main(argv: list[str] | None = None) -> int:
     stop_parser = sub.add_parser("stop", help="ask a run to stop at the next stage")
     stop_parser.add_argument("--run-id", default="toy")
 
+    approve_parser = sub.add_parser("approve", help="unblock a run waiting on approval_mode")
+    approve_parser.add_argument("--run-id", required=True)
+
     noise_parser = sub.add_parser("noise", help="write the round-0 noise report for gate G1")
     noise_parser.add_argument("--brief", type=Path, required=True)
     noise_parser.add_argument("--observations", type=Path)
@@ -101,6 +104,12 @@ def main(argv: list[str] | None = None) -> int:
         print(format_status(root, args.run_id, audit=args.audit))
         if args.audit and audit_rows(root, args.run_id):
             return 1
+        return 0
+    if args.command == "approve":
+        approve_path = root / "runs" / args.run_id / "APPROVE"
+        approve_path.parent.mkdir(parents=True, exist_ok=True)
+        approve_path.write_text("approve\n", encoding="utf-8")
+        print(f"wrote {approve_path}")
         return 0
     stop_path = root / "runs" / args.run_id / "STOP"
     stop_path.parent.mkdir(parents=True, exist_ok=True)

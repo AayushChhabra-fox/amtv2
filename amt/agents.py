@@ -103,9 +103,73 @@ def _backend() -> str:
     return os.environ.get("AMT_AGENT_BACKEND", "stub").strip().lower()
 
 
-def run_role(role: str, brief: Brief, root: Path, run_id: str) -> dict:
+def _model_for(role: str, explicit: str | None) -> str | None:
+    if explicit:
+        return explicit
+    chosen = os.environ.get(f"AMT_MODEL_{role.upper()}", "").strip()
+    return chosen or None
+
+
+def _timeout_s(explicit: int | None) -> int:
+    if explicit is not None:
+        return explicit
+    return int(os.environ.get("AMT_AGENT_TIMEOUT_S", "600"))
+
+
+def _token_cap(explicit: int | None) -> int | None:
+    if explicit is not None:
+        return explicit
+    raw = os.environ.get("AMT_TOKEN_CAP", "32000").strip()
+    if not raw:
+        return None
+    return int(raw)
+
+
+def run_role(
+    role: str,
+    brief: Brief,
+    root: Path,
+    run_id: str,
+    *,
+    node_id: str | None = None,
+    operator: str | None = None,
+    parent_ids: list[str] | None = None,
+    output_path: Path | None = None,
+    inputs: list[str] | None = None,
+    model: str | None = None,
+    timeout_s: int | None = None,
+    token_cap: int | None = None,
+    note: str = "",
+) -> dict:
+    """Call one role. Every call is logged with its model, paths, timeout, and tokens."""
+
     started = time.perf_counter()
+    chosen_model = _model_for(role, model)
+    timeout = _timeout_s(timeout_s)
+    cap = _token_cap(token_cap)
+    prompt = build_context(
+        role,
+        brief,
+        root,
+        run_id=run_id,
+        node_id=node_id,
+        operator=operator,
+        parent_ids=parent_ids,
+        output_path=None if output_path is None else str(output_path),
+        inputs=inputs,
+        note=note,
+    )
     mode = _backend()
+    common = {
+        "role": role,
+        "model": chosen_model,
+        "timeout_s": timeout,
+        "token_cap": cap,
+        "node_id": node_id,
+        "operator": operator,
+        "inputs": inputs or [],
+        "output_path": None if output_path is None else str(output_path),
+    }
     if mode == "auto":
         mode = "cursor" if cursor_agent_logged_in() else "stub"
         if mode == "stub":
@@ -113,7 +177,7 @@ def run_role(role: str, brief: Brief, root: Path, run_id: str) -> dict:
                 root,
                 run_id,
                 {
-                    "role": role,
+                    **common,
                     "backend": "cursor",
                     "ok": False,
                     "latency_s": round(time.perf_counter() - started, 4),
@@ -122,48 +186,80 @@ def run_role(role: str, brief: Brief, root: Path, run_id: str) -> dict:
                 },
             )
             started = time.perf_counter()
-    if mode == "cursor":
-        try:
-            output = _run_cursor(role, brief, root)
-            _log_call(
-                root,
-                run_id,
-                {
-                    "role": role,
-                    "backend": "cursor",
-                    "ok": True,
-                    "latency_s": round(time.perf_counter() - started, 4),
-                    "tokens": _token_count(output),
-                },
+    try:
+        if mode == "cursor":
+            output = _run_cursor(
+                role, root, prompt, model=chosen_model, timeout_s=timeout
             )
-            return output
-        except Exception as exc:
-            _log_call(
-                root,
-                run_id,
-                {
-                    "role": role,
-                    "backend": "cursor",
-                    "ok": False,
-                    "latency_s": round(time.perf_counter() - started, 4),
-                    "tokens": None,
-                    "error": str(exc),
-                },
-            )
-            raise
-    output = _run_stub(role, brief, root, run_id)
+        elif mode == "fake":
+            output = _run_fake(role, root, run_id, node_id=node_id)
+        else:
+            output = _run_stub(role, brief, root, run_id)
+        tokens = _token_count(output)
+        if cap is not None and tokens is not None and tokens > cap:
+            raise RuntimeError(f"token cap {cap} exceeded ({tokens})")
+    except Exception as exc:
+        _log_call(
+            root,
+            run_id,
+            {
+                **common,
+                "backend": mode,
+                "ok": False,
+                "latency_s": round(time.perf_counter() - started, 4),
+                "tokens": None,
+                "error": str(exc),
+            },
+        )
+        raise
     _log_call(
         root,
         run_id,
         {
-            "role": role,
-            "backend": "stub",
+            **common,
+            "backend": mode,
             "ok": True,
             "latency_s": round(time.perf_counter() - started, 4),
-            "tokens": 0,
+            "tokens": tokens,
         },
     )
     return output
+
+
+def coerce_role_output(output: object) -> object:
+    """Pull a planner or critic object out of a cursor-agent JSON envelope."""
+
+    if not isinstance(output, dict):
+        return output
+    if any(key in output for key in ("candidates", "proposals", "verdicts", "decision")):
+        return output
+    for key in ("text", "result", "output"):
+        parsed = _parse_embedded(output.get(key))
+        if isinstance(parsed, (dict, list)):
+            return parsed
+    return output
+
+
+def _parse_embedded(value: object) -> object | None:
+    if isinstance(value, (dict, list)):
+        return value
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            return json.loads(text[start : end + 1])
+        except json.JSONDecodeError:
+            return None
+    return None
 
 
 def _token_count(output: dict) -> int | None:
@@ -172,11 +268,17 @@ def _token_count(output: dict) -> int | None:
     return int(total) if total is not None else None
 
 
-def _run_cursor(role: str, brief: Brief, root: Path) -> dict:
+def _run_cursor(
+    role: str,
+    root: Path,
+    prompt: str,
+    *,
+    model: str | None,
+    timeout_s: int,
+) -> dict:
     binary = cursor_agent_bin()
     if binary is None:
         raise RuntimeError("cursor-agent is not on PATH")
-    prompt = build_context(role, brief, root)
     command = [
         binary,
         "-p",
@@ -187,10 +289,12 @@ def _run_cursor(role: str, brief: Brief, root: Path) -> dict:
         "--workspace",
         str(root),
     ]
+    if model:
+        command.extend(["--model", model])
     if role in {"planner", "critic"}:
         command.extend(["--mode", "plan"])
-    if role == "implementer":
-        _set_active_role(root, "implementer")
+    if role in {"implementer", "reviewer"}:
+        _set_active_role(root, role)
     command.append(prompt)
     try:
         completed = subprocess.run(
@@ -198,11 +302,11 @@ def _run_cursor(role: str, brief: Brief, root: Path) -> dict:
             check=False,
             capture_output=True,
             text=True,
-            timeout=int(os.environ.get("AMT_AGENT_TIMEOUT_S", "600")),
+            timeout=timeout_s,
             cwd=root,
         )
     finally:
-        if role == "implementer":
+        if role in {"implementer", "reviewer"}:
             _set_active_role(root, None)
     if completed.returncode != 0:
         detail = completed.stderr.strip() or completed.stdout.strip() or "cursor-agent failed"
@@ -220,6 +324,89 @@ def _set_active_role(root: Path, role: str | None) -> None:
         path.unlink(missing_ok=True)
     else:
         path.write_text(role)
+
+
+def _run_fake(role: str, root: Path, run_id: str, *, node_id: str | None) -> dict:
+    path = root / "runs" / run_id / "fake_agent.json"
+    if not path.is_file():
+        raise RuntimeError(f"fake agent script is missing: {path}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    calls = payload.get("calls")
+    if not isinstance(calls, list):
+        raise RuntimeError("fake agent script needs a calls list")
+    cursor = int(payload.get("cursor") or 0)
+    if cursor >= len(calls):
+        raise RuntimeError("fake agent script is exhausted")
+    call = calls[cursor]
+    expected = str(call.get("role") or "")
+    if expected != role:
+        raise RuntimeError(f"fake agent expected {expected}, got {role}")
+    scripted_node = call.get("node_id")
+    if scripted_node and node_id and scripted_node != node_id:
+        raise RuntimeError(f"fake agent expected node {scripted_node}, got {node_id}")
+    target = scripted_node or node_id
+    payload["cursor"] = cursor + 1
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    if call.get("error"):
+        raise RuntimeError(str(call["error"]))
+    files = call.get("files") or {}
+    if isinstance(files, dict) and files:
+        _write_scripted_files(root, files, role)
+    elif role == "implementer" and target:
+        _set_active_role(root, "implementer")
+        try:
+            _write_default_model(root, target)
+        finally:
+            _set_active_role(root, None)
+    elif role == "reviewer" and target:
+        _set_active_role(root, "reviewer")
+        try:
+            raw_verdict = str((call.get("output") or {}).get("verdict", ""))
+            verdict = "FAIL" if raw_verdict.upper() == "FAIL" else "PASS"
+            _write_text(root, f"candidates/{target}/review.md", f"# review\n\nVERDICT: {verdict}\n")
+        finally:
+            _set_active_role(root, None)
+    output = call.get("output")
+    if output is None:
+        output = {}
+    if not isinstance(output, dict):
+        raise RuntimeError("fake agent output must be an object")
+    usage = call.get("usage")
+    if isinstance(usage, dict):
+        output = {**output, "usage": usage}
+    return output
+
+
+def _write_scripted_files(root: Path, files: dict, role: str) -> None:
+    if role in {"implementer", "reviewer"}:
+        _set_active_role(root, role)
+    try:
+        for relative, contents in files.items():
+            _write_text(root, str(relative), str(contents))
+    finally:
+        if role in {"implementer", "reviewer"}:
+            _set_active_role(root, None)
+
+
+def _write_text(root: Path, relative: str, contents: str) -> None:
+    path = _candidate_path(root, relative)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(contents, encoding="utf-8")
+
+
+def _candidate_path(root: Path, relative: str) -> Path:
+    rel = Path(relative)
+    if rel.is_absolute() or ".." in rel.parts or len(rel.parts) < 3 or rel.parts[0] != "candidates":
+        raise RuntimeError(f"refusing agent write outside candidates/<id>/: {relative}")
+    if rel.parts[1].startswith("."):
+        raise RuntimeError(f"refusing agent write outside candidates/<id>/: {relative}")
+    return root / rel
+
+
+def _write_default_model(root: Path, node_id: str) -> None:
+    directory = root / "candidates" / node_id
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "model.py").write_text(MODEL_PY, encoding="utf-8")
 
 
 def _run_stub(role: str, brief: Brief, root: Path, run_id: str) -> dict:
@@ -257,6 +444,17 @@ def _run_stub(role: str, brief: Brief, root: Path, run_id: str) -> dict:
         finally:
             _set_active_role(root, None)
         return {"wrote": f"candidates/{spec.id}/model.py"}
+    if role == "reviewer":
+        _set_active_role(root, "reviewer")
+        try:
+            _write_text(
+                root,
+                f"candidates/{spec.id}/review.md",
+                "# review\n\nThe claimed logistic ranker is present.\n\nVERDICT: PASS\n",
+            )
+        finally:
+            _set_active_role(root, None)
+        return {"verdict": "PASS"}
     raise ValueError(f"unknown role {role}")
 
 

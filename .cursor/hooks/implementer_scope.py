@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
-"""Block implementer writes outside candidates/<id>/.
+"""Block implementer and reviewer writes outside candidates/<id>/.
+
+`.cursor/hooks.json` is schema version 1 from the Cursor command-hook format:
+each entry has a command, and preToolUse / beforeShellExecution set failClosed
+so a crash denies the write. preToolUse uses a tool-name matcher.
 
 Cursor's preToolUse payload does not include the subagent name. subagentStart
-does (`subagent_type`). This script records an active implementer on
-subagentStart and clears it on subagentStop. preToolUse and beforeShellExecution
-enforce the write scope only while that record, `.cursor/hooks/state/active_role`,
-or AMT_ROLE=implementer says the implementer is the writer.
+does (`subagent_type`). This script records an active writer on subagentStart
+and clears it on subagentStop. preToolUse and beforeShellExecution enforce the
+write scope only while that record, `.cursor/hooks/state/active_role`, or
+AMT_ROLE says the implementer or reviewer is the writer. Those roles cannot
+write `harness/`, `amt/`, `briefs/`, `datasets/`, `resources/`, or
+`databricks.yml`.
 
 Python 3.9 compatible: the hook runs with the system interpreter.
 """
@@ -20,6 +26,7 @@ from pathlib import Path
 
 PROTECTED_PREFIXES = ("harness/", "amt/", "briefs/", "datasets/", "resources/")
 PROTECTED_FILES = {"databricks.yml"}
+RESTRICTED_ROLES = {"implementer", "reviewer"}
 STATE_NAME = "active_implementers.json"
 
 
@@ -59,13 +66,13 @@ def save_state(payload):
 
 
 def implementer_active(event):
-    if os.environ.get("AMT_ROLE") == "implementer":
+    if os.environ.get("AMT_ROLE") in RESTRICTED_ROLES:
         return True
     role_file = role_path()
-    if role_file.is_file() and role_file.read_text().strip() == "implementer":
+    if role_file.is_file() and role_file.read_text().strip() in RESTRICTED_ROLES:
         return True
     subagent_type = str(event.get("subagent_type") or "")
-    if subagent_type == "implementer":
+    if subagent_type in RESTRICTED_ROLES:
         return True
     return bool(load_state()["ids"])
 
@@ -73,7 +80,7 @@ def implementer_active(event):
 def mark_start(event):
     subagent_type = str(event.get("subagent_type") or "")
     task = str(event.get("task") or "")
-    if subagent_type != "implementer" and not task.startswith("implementer:"):
+    if subagent_type not in RESTRICTED_ROLES and not task.startswith(("implementer:", "reviewer:")):
         return
     payload = load_state()
     subagent_id = str(event.get("subagent_id") or "implementer")
@@ -138,6 +145,13 @@ def roots_from(event):
     return roots
 
 
+def is_protected(rel):
+    name = rel.rstrip("/")
+    if name in PROTECTED_FILES or name.endswith("/databricks.yml"):
+        return True
+    return name.startswith(PROTECTED_PREFIXES)
+
+
 def decide_file_write(event):
     if not implementer_active(event):
         return allow()
@@ -147,7 +161,7 @@ def decide_file_write(event):
     root_list = roots_from(event)
     for raw in paths:
         rel = relative_path(raw, root_list)
-        if not candidate_write_ok(rel):
+        if is_protected(rel) or not candidate_write_ok(rel):
             return deny("Implementer may only write under candidates/<id>/. Blocked: " + rel)
     return allow()
 
@@ -170,7 +184,7 @@ def decide_shell(event):
     root_list = roots_from(event)
     for target in targets:
         rel = relative_path(target.strip("\"'"), root_list)
-        if not candidate_write_ok(rel):
+        if is_protected(rel) or not candidate_write_ok(rel):
             return deny("Implementer shell write blocked: " + rel)
     return allow()
 

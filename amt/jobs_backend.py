@@ -82,14 +82,21 @@ class FakeJobs:
 
     def find_mlflow_run(self, *, tags: dict) -> dict | None:
         payload = self._load()
+        metrics_table = _fake_metrics(self.root)
         for record in payload["submits"].values():
             params = record["params"]
             if all(str(params.get(key)) == str(value) for key, value in tags.items()):
-                return {
+                metrics = dict(metrics_table.get("*") or {})
+                metrics.update(metrics_table.get(str(params.get("candidate_id"))) or {})
+                found = {
                     "mlflow_run_id": record["mlflow_run_id"],
-                    "metric": 0.5,
+                    "metric": metrics.get("ndcg@10_graded", 0.5),
                     "tags": params,
                 }
+                for key in ("delta_point", "delta_ci_lo", "delta_ci_hi", "latency_p95_ms"):
+                    if key in metrics:
+                        found[key] = metrics[key]
+                return found
         return None
 
     def submit_count(self) -> int:
@@ -173,6 +180,16 @@ class DatabricksJobs:
             "metric": metrics.get("ndcg_at_10"),
             "tags": tags,
         }
+
+
+def _fake_metrics(root: Path) -> dict:
+    path = root / ".amt" / "fake_metrics.json"
+    if not path.is_file():
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        return {}
+    return payload
 
 
 def make_backend(root: Path) -> FakeJobs | DatabricksJobs:

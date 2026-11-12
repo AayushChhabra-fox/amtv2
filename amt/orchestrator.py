@@ -9,7 +9,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-from amt.agents import run_role
+import yaml
+
+from amt.agents import coerce_role_output, run_role
 from amt.budget import (
     BudgetExceeded,
     assert_can_spend,
@@ -20,10 +22,25 @@ from amt.budget import (
 from amt.confirm import ConfirmationSubmission, confirmation_submissions
 from amt.jobs_backend import make_backend
 from amt.ledger import append, read_rows
-from amt.preflight import smoke_candidate
-from amt.pruner import ledger_row
-from amt.schemas import AgentRevision, Brief, RunState, load_brief, parse_agent_output
+from amt.preflight import preflight_candidate
+from amt.pruner import RunView, commit_rung, decide, ledger_row
+from amt.schemas import (
+    AgentRevision,
+    Brief,
+    DeltaVsBaseline,
+    NodeWork,
+    ProposalBatch,
+    RunState,
+    VerdictBatch,
+    load_brief,
+    parse_agent_output,
+)
 from amt.signoff import search_block_reason
+
+# Caps from section 3.4. A schema failure is returned once; the next one escalates.
+MAX_DEBUG_ATTEMPTS = 3
+MAX_OUTER_RETRIES = 2
+MAX_ROUNDS = 4
 
 
 def run_brief(
@@ -44,6 +61,8 @@ def run_brief(
         state_path.unlink()
     if state_path.is_file():
         state = _load_state(state_path)
+        if approval_mode:
+            state.approval_mode = brief.approval_mode
     else:
         state = _new_state(brief, resolved_id, brief_path, root)
     if state.stage in {"REPORT", "ESCALATE"}:
@@ -62,10 +81,22 @@ def run_brief(
             _save(state_path, state)
             _write_escalate(root, state, "stop file present")
             return state
+        if state.awaiting_approval:
+            if not _approved(root, state.run_id):
+                return state
+            state.awaiting_approval = False
+            state.approval_gate = None
+            _consume_approval(root, state.run_id)
+            _save(state_path, state)
         finished = state.stage
-        state = _step(state, brief, root, backend)
+        if brief.candidate is not None:
+            state = _step(state, brief, root, backend)
+        else:
+            state = _search_step(state, brief, root, backend)
         _save(state_path, state)
         if os.environ.get("AMT_STOP_AFTER") == finished:
+            return state
+        if state.awaiting_approval:
             return state
     return state
 
@@ -88,7 +119,7 @@ def _step(state: RunState, brief: Brief, root: Path, backend: object) -> RunStat
         run_role("implementer", brief, root, state.run_id)
         state.stage = "SMOKE"
     elif stage == "SMOKE":
-        smoke_candidate(root / "candidates" / state.candidate_id)
+        preflight_candidate(root / "candidates" / state.candidate_id)
         state.stage = "SUBMIT"
     elif stage == "SUBMIT":
         if _submit(state, brief, root, backend):
@@ -149,7 +180,11 @@ def apply_agent_output(
 
 
 def _structured_role_output(role: str, output: Any) -> bool:
-    if role not in {"planner", "critic"} or not isinstance(output, dict):
+    if role not in {"planner", "critic"}:
+        return False
+    if isinstance(output, list):
+        return True
+    if not isinstance(output, dict):
         return False
     if role == "planner":
         return "candidates" in output or "proposals" in output
@@ -157,6 +192,7 @@ def _structured_role_output(role: str, output: Any) -> bool:
 
 
 def _reject_invalid_output(state: RunState, role: str, output: Any, root: Path) -> RunState | None:
+    output = coerce_role_output(output)
     if not _structured_role_output(role, output):
         return None
     state, revision = apply_agent_output(state, role, output)
@@ -280,6 +316,24 @@ def _ledger_has(root: Path, state: RunState) -> bool:
 
 def _new_state(brief: Brief, run_id: str, brief_path: Path, root: Path) -> RunState:
     pinned = brief.candidate
+    if pinned is None:
+        return RunState(
+            run_id=run_id,
+            brief_path=str(brief_path),
+            stage="PLAN",
+            round=1,
+            live_nodes=[],
+            approval_mode=brief.approval_mode,
+            k=brief.k,
+            budget_dbu=brief.budget.total_dbu,
+            candidate_id="pending",
+            family="search",
+            rung="R1",
+            seed=0,
+            batch=brief.name or brief_path.stem,
+            git_sha=_git_sha(root),
+            round_operator="draft",
+        )
     return RunState(
         run_id=run_id,
         brief_path=str(brief_path),
@@ -347,3 +401,916 @@ def _write_digest(root: Path, state: RunState) -> None:
         f"job `{record.get('job_run_id')}` mlflow `{record.get('mlflow_run_id')}`.\n\n"
         f"Spent {state.spent_dbu} DBU (estimated).\n"
     )
+
+
+def operator_for_round(round_number: int, *, plateau: bool, lineage_count: int) -> str:
+    """Operator for a round. Round 4 combines two lineages; a plateau forks to a new draft."""
+
+    if round_number <= 1:
+        return "draft"
+    if round_number > MAX_ROUNDS:
+        return "confirm"
+    if round_number == MAX_ROUNDS:
+        return "combine" if lineage_count >= 2 else "confirm"
+    if plateau:
+        return "draft"
+    return "improve"
+
+
+def fork_on_plateau(gains: list[float], min_effect: float) -> bool:
+    """True when the last two improvements each sit below the noise floor."""
+
+    if len(gains) < 2:
+        return False
+    return gains[-1] < min_effect and gains[-2] < min_effect
+
+
+def _search_step(state: RunState, brief: Brief, root: Path, backend: object) -> RunState:
+    stage = state.stage
+    if stage == "PLAN":
+        return _search_plan(state, brief, root)
+    if stage == "CRITIQUE":
+        return _search_critique(state, brief, root)
+    if stage == "SPEC":
+        return _search_spec(state, root)
+    if stage == "IMPLEMENT":
+        return _search_implement(state, brief, root)
+    if stage == "PREFLIGHT":
+        return _search_preflight(state, brief, root)
+    if stage == "DEBUG":
+        return _search_debug(state, brief, root)
+    if stage == "SUBMIT":
+        return _search_submit(state, brief, root, backend)
+    if stage == "WAIT":
+        return _search_wait(state, root, backend)
+    if stage == "PRUNE":
+        return _search_prune(state, brief, root, backend)
+    if stage == "CONFIRM":
+        return _search_confirm(state, brief, root, backend)
+    if stage == "REPORT":
+        _write_report(root, state, brief)
+        return state
+    raise RuntimeError(f"unknown stage {stage}")
+
+
+def _search_plan(state: RunState, brief: Brief, root: Path) -> RunState:
+    feedback = _feedback_text(root, state)
+    parents = _allowed_parent_list(state)
+    output_path = _proposals_path(root, state)
+    output = run_role(
+        "planner",
+        brief,
+        root,
+        state.run_id,
+        operator=state.round_operator,
+        parent_ids=parents,
+        output_path=output_path,
+        note=_plan_note(state, feedback),
+    )
+    payload = coerce_role_output(output)
+    if not _structured_role_output("planner", payload):
+        return _schema_retry(state, root, "planner output had no candidates")
+    state, revision = apply_agent_output(state, "planner", payload)
+    if revision is not None:
+        return _schema_retry(state, root, revision.message, already_counted=True)
+    parsed = parse_agent_output("planner", payload)
+    batch = parsed.value
+    if not isinstance(batch, ProposalBatch):
+        return _schema_retry(state, root, "planner output did not parse")
+    problems = _proposal_problems(state, batch)
+    if problems:
+        return _schema_retry(state, root, "\n".join(problems))
+    _write_proposals(output_path, batch)
+    _clear_feedback(root, state)
+    state.stage = "CRITIQUE"
+    return _maybe_pause(state, root, "PLAN")
+
+
+def _search_critique(state: RunState, brief: Brief, root: Path) -> RunState:
+    output_path = root / "runs" / state.run_id / f"round_{state.round}_verdicts.json"
+    output = run_role(
+        "critic",
+        brief,
+        root,
+        state.run_id,
+        operator=state.round_operator,
+        parent_ids=_allowed_parent_list(state),
+        output_path=output_path,
+        inputs=[str(_proposals_path(root, state))],
+    )
+    payload = coerce_role_output(output)
+    if not _structured_role_output("critic", payload):
+        return _schema_retry(state, root, "critic output had no verdicts")
+    state, revision = apply_agent_output(state, "critic", payload)
+    if revision is not None:
+        return _schema_retry(state, root, revision.message, already_counted=True)
+    parsed = parse_agent_output("critic", payload)
+    verdicts = parsed.value
+    if not isinstance(verdicts, VerdictBatch):
+        return _schema_retry(state, root, "critic output did not parse")
+    output_path.write_text(verdicts.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    revises = [item for item in verdicts.verdicts if item.decision == "REVISE"]
+    if revises:
+        state.critic_revisions += 1
+        message = "\n".join(f"{item.candidate_id}: {item.reason}" for item in revises)
+        if state.critic_revisions > 1:
+            return _escalate(state, root, f"critic revision cap\n{message}")
+        _write_note(root, state, message)
+        state.stage = "PLAN"
+        return _maybe_pause(state, root, "CRITIQUE")
+    batch = _load_proposals(root, state)
+    by_id = {item.candidate_id: item for item in verdicts.verdicts}
+    passed = []
+    for candidate in batch.candidates:
+        verdict = by_id.get(candidate.id)
+        if verdict is None or verdict.decision != "PASS":
+            continue
+        if _duplicate(candidate, passed, root):
+            continue
+        passed.append(candidate)
+    passed = passed[: state.k]
+    if not passed:
+        return _escalate(state, root, "critic dropped every proposal")
+    needed = min(3, state.k)
+    families = {candidate.family for candidate in passed}
+    if len(families) < needed:
+        state.critic_revisions += 1
+        message = f"shortlist has {len(families)} families; need at least {needed}"
+        if state.critic_revisions > 1:
+            return _escalate(state, root, f"critic revision cap\n{message}")
+        _write_note(root, state, message)
+        state.stage = "PLAN"
+        return _maybe_pause(state, root, "CRITIQUE")
+    _clear_feedback(root, state)
+    rung = _rungs_for(state.round_operator)[0]
+    state.rung_index = 0
+    state.nodes = [
+        node
+        for node in state.nodes
+        if not (node.search_round == state.round and node.status == "pending")
+    ]
+    combine_parents = _combine_parents(state) if state.round_operator == "combine" else []
+    for candidate in passed:
+        parents = list(combine_parents) if combine_parents else (
+            [candidate.parent_id] if candidate.parent_id else []
+        )
+        state.nodes.append(
+            NodeWork(
+                node_id=candidate.id,
+                family=candidate.family,
+                operator=candidate.operator,
+                parent_id=candidate.parent_id,
+                parents=parents,
+                claim=candidate.claim,
+                change=candidate.change,
+                fit_argument=candidate.fit_argument,
+                cheap_test=candidate.cheap_test,
+                kill_if=candidate.kill_if,
+                est_cost=candidate.est_cost,
+                rung=rung,  # type: ignore[arg-type]
+                search_round=state.round,
+                status="pending",
+            )
+        )
+    state.live_nodes = [candidate.id for candidate in passed]
+    state.candidate_id = passed[0].id
+    state.family = passed[0].family
+    state.rung = rung  # type: ignore[assignment]
+    state.stage = "SPEC"
+    return _maybe_pause(state, root, "CRITIQUE")
+
+
+def _search_spec(state: RunState, root: Path) -> RunState:
+    for node in _round_nodes(state):
+        _write_node_spec(root, node)
+    state.stage = "IMPLEMENT"
+    return _maybe_pause(state, root, "SPEC")
+
+
+def _search_implement(state: RunState, brief: Brief, root: Path) -> RunState:
+    node = next((item for item in _round_nodes(state) if item.status == "pending"), None)
+    if node is None:
+        state.stage = "PREFLIGHT"
+        return _maybe_pause(state, root, "IMPLEMENT")
+    model_path = root / "candidates" / node.node_id / "model.py"
+    run_role(
+        "implementer",
+        brief,
+        root,
+        state.run_id,
+        node_id=node.node_id,
+        operator=node.operator,
+        parent_ids=node.parents,
+        output_path=model_path,
+    )
+    if not model_path.is_file():
+        return _fail_preflight(state, root, node, "implementer did not write model.py")
+    node.status = "implemented"
+    if any(item.status == "pending" for item in _round_nodes(state)):
+        return state
+    state.stage = "PREFLIGHT"
+    return _maybe_pause(state, root, "IMPLEMENT")
+
+
+def _search_preflight(state: RunState, brief: Brief, root: Path) -> RunState:
+    node = next(
+        (item for item in _round_nodes(state) if item.status in {"implemented", "debugging"}),
+        None,
+    )
+    if node is None:
+        if any(item.status == "ready" for item in _round_nodes(state)):
+            state.stage = "SUBMIT"
+            return _maybe_pause(state, root, "PREFLIGHT")
+        return _escalate(state, root, "no candidate passed preflight")
+    directory = root / "candidates" / node.node_id
+    try:
+        preflight_candidate(directory)
+    except Exception as exc:
+        return _fail_preflight(state, root, node, str(exc))
+    review_path = directory / "review.md"
+    run_role(
+        "reviewer",
+        brief,
+        root,
+        state.run_id,
+        node_id=node.node_id,
+        operator=node.operator,
+        output_path=review_path,
+        inputs=[str(directory / "spec.md"), str(directory / "model.py")],
+    )
+    verdict = _review_verdict(review_path)
+    if verdict != "PASS":
+        return _fail_preflight(state, root, node, f"review {verdict or 'missing'}")
+    node.status = "ready"
+    node.preflight = "PASS"
+    node.review = "PASS"
+    if any(item.status in {"implemented", "debugging", "pending"} for item in _round_nodes(state)):
+        return state
+    state.stage = "SUBMIT"
+    return _maybe_pause(state, root, "PREFLIGHT")
+
+
+def _search_debug(state: RunState, brief: Brief, root: Path) -> RunState:
+    node = next((item for item in _round_nodes(state) if item.status == "debugging"), None)
+    if node is None:
+        state.stage = "PREFLIGHT"
+        return state
+    model_path = root / "candidates" / node.node_id / "model.py"
+    run_role(
+        "implementer",
+        brief,
+        root,
+        state.run_id,
+        node_id=node.node_id,
+        operator="debug",
+        parent_ids=node.parents,
+        output_path=model_path,
+        note="Fix the preflight failure recorded in the fix chain.",
+    )
+    node.status = "implemented"
+    state.stage = "PREFLIGHT"
+    return _maybe_pause(state, root, "DEBUG")
+
+
+def _search_submit(state: RunState, brief: Brief, root: Path, backend: object) -> RunState:
+    ready = [node for node in _round_nodes(state) if node.status == "ready"]
+    if not ready:
+        if any(node.status == "submitted" for node in _round_nodes(state)):
+            state.stage = "WAIT"
+            return _maybe_pause(state, root, "SUBMIT")
+        return _escalate(state, root, "nothing to submit")
+    cap = brief.budget.max_concurrent_jobs
+    if cap is not None and _inflight_unfinished(state) >= cap:
+        state.stage = "WAIT"
+        return state
+    node = ready[0]
+    key = _job_key(node)
+    record = dict(state.submitted_jobs.get(key) or {})
+    if not record.get("job_run_id"):
+        estimate = float(node.est_cost)
+        committed = node_committed_dbu(read_rows(root), state.run_id, node.node_id)
+        try:
+            assert_can_spend(
+                brief,
+                state.spent_dbu + inflight_dbu(state.submitted_jobs),
+                estimate,
+                candidate_spent_dbu=committed + inflight_dbu(state.submitted_jobs, node.node_id),
+            )
+        except BudgetExceeded as exc:
+            return _escalate(state, root, str(exc))
+        params = {
+            "candidate_id": node.node_id,
+            "rung": node.rung,
+            "seed": str(node.seed),
+            "batch": state.batch,
+            "family": node.family,
+            "operator": node.operator,
+            "git_sha": state.git_sha,
+            "dbu_est": str(estimate),
+            "amt_run_id": state.run_id,
+            "split": "search_val",
+        }
+        job_run_id = backend.submit(  # type: ignore[attr-defined]
+            job_key=key,
+            params=params,
+            idempotency_token=f"{state.run_id}:{key}",
+        )
+        record.update(
+            {"job_run_id": job_run_id, "submitted_at": time.time(), "dbu_est": estimate}
+        )
+        state.submitted_jobs[key] = record
+    node.status = "submitted"
+    state.candidate_id = node.node_id
+    state.family = node.family
+    state.rung = node.rung
+    if any(item.status == "ready" for item in _round_nodes(state)):
+        if cap is None or _inflight_unfinished(state) < cap:
+            return state
+    state.stage = "WAIT"
+    return _maybe_pause(state, root, "SUBMIT")
+
+
+def _search_wait(state: RunState, root: Path, backend: object) -> RunState:
+    pending: list[tuple[NodeWork, str, dict[str, Any]]] = []
+    for node in _round_nodes(state):
+        if node.status != "submitted":
+            continue
+        key = _job_key(node)
+        record = dict(state.submitted_jobs.get(key) or {})
+        if record.get("result_state"):
+            continue
+        pending.append((node, key, record))
+    if not pending:
+        if any(node.status == "ready" for node in _round_nodes(state)):
+            state.stage = "SUBMIT"
+            return state
+        state.stage = "PRUNE"
+        return _maybe_pause(state, root, "WAIT")
+    node, key, record = pending[0]
+    result = backend.wait(record["job_run_id"])  # type: ignore[attr-defined]
+    record["result_state"] = result.get("result_state")
+    record["finished_at"] = time.time()
+    state.submitted_jobs[key] = record
+    if result.get("result_state") != "SUCCESS":
+        node.status = "failed"
+    return state
+
+
+def _search_prune(state: RunState, brief: Brief, root: Path, backend: object) -> RunState:
+    schedule = _rungs_for(state.round_operator)
+    rung = schedule[state.rung_index]
+    views: list[RunView] = []
+    charges: dict[str, float] = {}
+    for node in _round_nodes(state):
+        if node.rung != rung or node.status not in {"submitted", "failed"}:
+            continue
+        key = _job_key(node)
+        record = dict(state.submitted_jobs.get(key) or {})
+        found = backend.find_mlflow_run(  # type: ignore[attr-defined]
+            tags={
+                "candidate_id": node.node_id,
+                "rung": node.rung,
+                "seed": str(node.seed),
+            }
+        )
+        charged = _job_charge(record)
+        charges[node.node_id] = charged
+        delta = _delta_from_found(found)
+        metric = None if found is None else found.get("metric")
+        views.append(
+            RunView(
+                node_id=node.node_id,
+                family=node.family,
+                seed=node.seed,
+                rung=rung,  # type: ignore[arg-type]
+                split="search_val",
+                operator=node.operator,
+                claim=node.claim or node.node_id,
+                parent_id=node.parent_id,
+                round=state.round,
+                metric=None if metric is None else float(metric),
+                delta=delta,
+                preflight="FAIL" if node.status == "failed" else (node.preflight or "PASS"),
+                review="FAIL" if node.status == "failed" else (node.review or "PASS"),
+                dbu=charged,
+                git_sha=state.git_sha,
+                mlflow_run_id=None if found is None else found.get("mlflow_run_id"),
+                job_run_id=record.get("job_run_id"),
+            )
+        )
+    if not views:
+        return _escalate(state, root, f"no runs to prune at {rung}")
+    baseline = RunView(
+        node_id="lgbm_reference",
+        family="lgbm_reference",
+        kind="baseline",
+        rung=rung,  # type: ignore[arg-type]
+        split="search_val",
+        operator="draft",
+        claim="same-rung lightgbm reference",
+        metric=0.4,
+        delta=DeltaVsBaseline(point=0.0, ci_lo=0.0, ci_hi=0.0),
+        git_sha=state.git_sha,
+    )
+    try:
+        decision = decide(rung, views, [baseline], brief)
+    except Exception as exc:
+        return _escalate(state, root, f"pruner failed: {exc}")
+    commit_rung(root, state.run_id, views, decision)
+    by_id = {item.node_id: item for item in decision.decisions}
+    for node in _round_nodes(state):
+        item = by_id.get(node.node_id)
+        if item is None:
+            continue
+        if item.delta is not None:
+            node.delta_point = item.delta.point
+            node.delta_lo = item.delta.ci_lo
+            node.delta_hi = item.delta.ci_hi
+        node.status = "kept" if item.status in {"kept", "promoted"} else item.status  # type: ignore[assignment]
+        _mark_pruned(state, node, charges.get(node.node_id, 0.0))
+    if decision.promoted:
+        state.promoted = list(decision.promoted)
+    state.live_nodes = list(decision.survivors)
+    if decision.survivors and state.rung_index + 1 < len(schedule):
+        state.rung_index += 1
+        next_rung = schedule[state.rung_index]
+        for node in _round_nodes(state):
+            if node.node_id in decision.survivors:
+                node.status = "ready"
+                node.rung = next_rung  # type: ignore[assignment]
+        state.stage = "SUBMIT"
+        return _maybe_pause(state, root, "PRUNE")
+    _record_gains(state)
+    _write_round_digest(root, state, decision)
+    return _advance_round(state, brief, root, bool(decision.survivors))
+
+
+def _search_confirm(state: RunState, brief: Brief, root: Path, backend: object) -> RunState:
+    if not state.promoted:
+        state.stage = "REPORT"
+        _write_report(root, state, brief)
+        return state
+    families = {node.node_id: node.family for node in state.nodes}
+    submissions = request_confirmation(
+        state.promoted,
+        batch=state.batch,
+        spec=brief.resolved_dataset_spec() or "",
+        run_id=state.run_id,
+        families=families,
+        git_sha=state.git_sha,
+    )
+    for submission in submissions:
+        key = f"confirm/{submission.candidate_id}/{submission.seed}"
+        record = dict(state.submitted_jobs.get(key) or {})
+        if not record.get("job_run_id"):
+            estimate = 0.1
+            try:
+                assert_can_spend(
+                    brief,
+                    state.spent_dbu + inflight_dbu(state.submitted_jobs),
+                    estimate,
+                )
+            except BudgetExceeded as exc:
+                return _escalate(state, root, str(exc))
+            params = submission.job_params()
+            params["rung"] = "R3"
+            job_run_id = backend.submit(  # type: ignore[attr-defined]
+                job_key=key,
+                params=params,
+                idempotency_token=f"{state.run_id}:{key}",
+            )
+            record.update(
+                {"job_run_id": job_run_id, "submitted_at": time.time(), "dbu_est": estimate}
+            )
+            state.submitted_jobs[key] = record
+            return state
+        if not record.get("result_state"):
+            result = backend.wait(record["job_run_id"])  # type: ignore[attr-defined]
+            record["result_state"] = result.get("result_state")
+            record["finished_at"] = time.time()
+            if not record.get("pruned"):
+                state.spent_dbu += float(record.get("dbu_est") or 0.0)
+                record["pruned"] = True
+            state.submitted_jobs[key] = record
+            if result.get("result_state") != "SUCCESS":
+                return _escalate(state, root, f"confirm job failed: {result}")
+            return state
+    state.stage = "REPORT"
+    _write_report(root, state, brief)
+    return state
+
+
+def _advance_round(state: RunState, brief: Brief, root: Path, survived: bool) -> RunState:
+    if not survived:
+        state.outer_retries += 1
+        if state.outer_retries > MAX_OUTER_RETRIES:
+            return _escalate(state, root, "outer retry cap")
+        state.nodes = [node for node in state.nodes if node.search_round != state.round]
+        state.rung_index = 0
+        state.stage = "PLAN"
+        return _maybe_pause(state, root, "PRUNE")
+    state.outer_retries = 0
+    kept = [node.node_id for node in state.nodes if node.status == "kept"]
+    nxt = operator_for_round(
+        state.round + 1,
+        plateau=fork_on_plateau(list(state.improvement_gains), brief.min_effect),
+        lineage_count=len(set(kept)),
+    )
+    if nxt == "confirm":
+        if not state.promoted:
+            state.stage = "REPORT"
+            _write_report(root, state, brief)
+            return state
+        state.stage = "CONFIRM"
+        return _maybe_pause(state, root, "PRUNE")
+    state.round += 1
+    state.round_operator = nxt  # type: ignore[assignment]
+    state.rung_index = 0
+    state.stage = "PLAN"
+    return _maybe_pause(state, root, "PRUNE")
+
+
+def _record_gains(state: RunState) -> None:
+    if state.round_operator != "improve":
+        return
+    for node in _round_nodes(state):
+        if node.status != "kept" or node.delta_point is None or not node.parent_id:
+            continue
+        parent = _find_node(state, node.parent_id)
+        parent_point = 0.0 if parent is None or parent.delta_point is None else parent.delta_point
+        state.improvement_gains.append(node.delta_point - parent_point)
+
+
+def _fail_preflight(state: RunState, root: Path, node: NodeWork, reason: str) -> RunState:
+    _append_debug(root, node, reason)
+    if node.debug_attempts >= MAX_DEBUG_ATTEMPTS:
+        node.status = "failed"
+        node.preflight = "FAIL"
+        active = {"pending", "implemented", "ready", "debugging"}
+        others = [
+            item
+            for item in _round_nodes(state)
+            if item.node_id != node.node_id and item.status in active
+        ]
+        if not others:
+            return _escalate(
+                state,
+                root,
+                f"debug cap after {MAX_DEBUG_ATTEMPTS} attempts\n{reason}",
+            )
+        if any(item.status != "pending" for item in others):
+            state.stage = "PREFLIGHT"
+        else:
+            state.stage = "IMPLEMENT"
+        return state
+    node.debug_attempts += 1
+    node.status = "debugging"
+    state.candidate_id = node.node_id
+    state.stage = "DEBUG"
+    return _maybe_pause(state, root, "PREFLIGHT")
+
+
+def _maybe_pause(state: RunState, root: Path, completed: str) -> RunState:
+    pause = state.approval_mode == "every_stage" or (
+        state.approval_mode == "round_shortlist" and completed == "CRITIQUE"
+    )
+    if not pause:
+        return state
+    state.awaiting_approval = True
+    state.approval_gate = completed
+    path = root / "runs" / state.run_id / "APPROVAL.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"# Approval\n\nStage `{completed}` finished. Mode `{state.approval_mode}`. "
+        f"Next stage is `{state.stage}`.\n\n"
+        f"Resume with `amt approve --run-id {state.run_id}` and then `amt run`.\n",
+        encoding="utf-8",
+    )
+    return state
+
+
+def _schema_retry(
+    state: RunState,
+    root: Path,
+    message: str,
+    *,
+    already_counted: bool = False,
+) -> RunState:
+    if not already_counted:
+        state.revisions += 1
+    if "counts as 1 revision" in message:
+        text = message
+    else:
+        text = f"This counts as 1 revision.\n{message}"
+    _write_note(root, state, text)
+    if state.revisions > 1:
+        return _escalate(state, root, text)
+    return state
+
+
+def _escalate(state: RunState, root: Path, reason: str) -> RunState:
+    state.stage = "ESCALATE"
+    _write_escalate(root, state, reason)
+    return state
+
+
+def _proposal_problems(state: RunState, batch: ProposalBatch) -> list[str]:
+    allowed = set(_allowed_parent_list(state))
+    problems: list[str] = []
+    seen: set[tuple[str, str, str]] = set()
+    for candidate in batch.candidates:
+        if candidate.operator != state.round_operator:
+            problems.append(
+                f"{candidate.id} operator is {candidate.operator}; "
+                f"this round requires {state.round_operator}"
+            )
+        if state.round_operator != "draft" and candidate.parent_id not in allowed:
+            problems.append(f"{candidate.id} parent is not one of {sorted(allowed)}")
+        key = _feature_key(candidate.family, candidate.claim, candidate.change)
+        if key in seen:
+            problems.append(f"{candidate.id} repeats a proposal already in this batch")
+        seen.add(key)
+    return problems
+
+
+def _duplicate(candidate: Any, accepted: list[Any], root: Path) -> bool:
+    key = _feature_key(candidate.family, candidate.claim, candidate.change)
+    for other in accepted:
+        if _feature_key(other.family, other.claim, other.change) == key:
+            return True
+    claim = candidate.claim.strip().lower()
+    for row in read_rows(root):
+        if row.family == candidate.family and row.claim.strip().lower() == claim:
+            return True
+    return False
+
+
+def _feature_key(family: str, claim: str, change: str | None) -> tuple[str, str, str]:
+    return (family.strip().lower(), claim.strip().lower(), (change or "").strip().lower())
+
+
+def _allowed_parent_list(state: RunState) -> list[str]:
+    if state.round_operator == "draft":
+        return []
+    if state.round_operator == "combine":
+        return _combine_parents(state)
+    previous = state.round - 1
+    return [
+        node.node_id
+        for node in state.nodes
+        if node.status == "kept" and node.search_round == previous
+    ]
+
+
+def _combine_parents(state: RunState) -> list[str]:
+    kept = [node for node in state.nodes if node.status == "kept"]
+    kept.sort(key=lambda node: (-node.search_round, -(node.delta_point or 0.0), node.node_id))
+    found: list[str] = []
+    for node in kept:
+        if node.node_id not in found:
+            found.append(node.node_id)
+        if len(found) == 2:
+            break
+    return found
+
+
+def _round_nodes(state: RunState) -> list[NodeWork]:
+    return [node for node in state.nodes if node.search_round == state.round]
+
+
+def _find_node(state: RunState, node_id: str) -> NodeWork | None:
+    for node in state.nodes:
+        if node.node_id == node_id:
+            return node
+    return None
+
+
+def _rungs_for(operator: str) -> list[str]:
+    if operator == "draft":
+        return ["R1", "R2", "R3"]
+    if operator == "combine":
+        return ["R3"]
+    return ["R2", "R3"]
+
+
+def _job_key(node: NodeWork) -> str:
+    return f"{node.node_id}/{node.rung}/{node.seed}"
+
+
+def _inflight_unfinished(state: RunState) -> int:
+    count = 0
+    for record in state.submitted_jobs.values():
+        if record.get("pruned") or record.get("result_state") or not record.get("job_run_id"):
+            continue
+        count += 1
+    return count
+
+
+def _job_charge(record: dict[str, Any]) -> float:
+    start = record.get("submitted_at")
+    end = record.get("finished_at")
+    if start is not None and end is not None:
+        wall = (float(end) - float(start)) / 60.0
+        if wall >= 1e-3:
+            return estimate_dbu(wall)
+    return float(record.get("dbu_est") or 0.0)
+
+
+def _delta_from_found(found: dict[str, Any] | None) -> DeltaVsBaseline | None:
+    if not found or found.get("delta_point") is None:
+        return None
+    return DeltaVsBaseline(
+        point=float(found["delta_point"]),
+        ci_lo=float(found["delta_ci_lo"]),
+        ci_hi=float(found["delta_ci_hi"]),
+    )
+
+
+def _mark_pruned(state: RunState, node: NodeWork, charged: float) -> None:
+    key = _job_key(node)
+    record = dict(state.submitted_jobs.get(key) or {})
+    if record.get("pruned"):
+        return
+    state.spent_dbu += charged
+    record["pruned"] = True
+    state.submitted_jobs[key] = record
+
+
+def _proposals_path(root: Path, state: RunState) -> Path:
+    return root / "runs" / state.run_id / f"round_{state.round}_proposals.yaml"
+
+
+def _write_proposals(path: Path, batch: ProposalBatch) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"candidates": [candidate.model_dump() for candidate in batch.candidates]}
+    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+
+def _load_proposals(root: Path, state: RunState) -> ProposalBatch:
+    return ProposalBatch.model_validate(yaml.safe_load(_proposals_path(root, state).read_text()))
+
+
+def _write_node_spec(root: Path, node: NodeWork) -> None:
+    directory = root / "candidates" / node.node_id
+    directory.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "id": node.node_id,
+        "family": node.family,
+        "operator": node.operator,
+        "parent_id": node.parent_id,
+        "claim": node.claim,
+        "change": node.change,
+        "fit_argument": node.fit_argument,
+        "cheap_test": node.cheap_test,
+        "kill_if": node.kill_if,
+    }
+    (directory / "candidate.yaml").write_text(
+        yaml.safe_dump(payload, sort_keys=False), encoding="utf-8"
+    )
+    parents = ", ".join(node.parents) if node.parents else "none"
+    (directory / "spec.md").write_text(
+        f"# {node.node_id}\n\n"
+        f"Family: {node.family}\n\n"
+        f"Operator: {node.operator}\n\n"
+        f"Parents: {parents}\n\n"
+        f"Claim: {node.claim}\n\n"
+        f"Change: {node.change or 'new design'}\n\n"
+        f"Fit argument: {node.fit_argument}\n\n"
+        f"Cheap test: {node.cheap_test}\n\n"
+        f"Kill if: {node.kill_if}\n\n"
+        "Acceptance: fit and score use only the frame passed in. "
+        "Scores are finite and match the frame length. "
+        "Do not read holdout splits, tables, or files outside this directory.\n",
+        encoding="utf-8",
+    )
+
+
+def _review_verdict(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    verdict = None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip().upper()
+        if stripped.startswith("VERDICT:"):
+            verdict = stripped.split(":", 1)[1].strip()
+    return verdict
+
+
+def _append_debug(root: Path, node: NodeWork, reason: str) -> None:
+    path = root / "candidates" / node.node_id / "debug_log.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = path.read_text(encoding="utf-8") if path.is_file() else "# debug log\n"
+    attempt = node.debug_attempts + 1
+    path.write_text(existing.rstrip() + f"\n\n## attempt {attempt}\n\n{reason}\n", encoding="utf-8")
+
+
+def _plan_note(state: RunState, feedback: str) -> str:
+    lines = [f"This is round {state.round}. Propose {state.round_operator} candidates."]
+    parents = _allowed_parent_list(state)
+    if parents:
+        lines.append("Allowed parents: " + ", ".join(parents))
+    if state.round_operator == "improve":
+        lines.append("Each improvement is one atomic change. Set parent_id and change.")
+    if state.round_operator == "combine":
+        lines.append("Propose one combine of the two parent nodes.")
+    if state.round_operator == "draft" and state.round == 1:
+        lines.append("Prefer a simple design. No ensembles and no heavy tuning.")
+    if state.round_operator == "draft" and state.round > 1:
+        lines.append("The lineage plateaued. Draft one new family.")
+    if feedback:
+        lines.append(feedback)
+    return "\n".join(lines)
+
+
+def _feedback_text(root: Path, state: RunState) -> str:
+    path = root / "runs" / state.run_id / "agent_feedback.md"
+    if not path.is_file():
+        return ""
+    return path.read_text(encoding="utf-8")
+
+
+def _write_note(root: Path, state: RunState, message: str) -> None:
+    path = root / "runs" / state.run_id / "agent_feedback.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(message, encoding="utf-8")
+
+
+def _clear_feedback(root: Path, state: RunState) -> None:
+    path = root / "runs" / state.run_id / "agent_feedback.md"
+    path.unlink(missing_ok=True)
+
+
+def _write_round_digest(root: Path, state: RunState, decision: Any) -> None:
+    path = root / "runs" / state.run_id / f"round_{state.round}.md"
+    rows = [
+        row
+        for row in read_rows(root)
+        if row.run_id == state.run_id and row.round == state.round
+    ]
+    lines = [
+        f"# Round {state.round}",
+        "",
+        f"Operator: {state.round_operator}",
+        "",
+        "## Proposals and verdicts",
+    ]
+    verdict_path = root / "runs" / state.run_id / f"round_{state.round}_verdicts.json"
+    if verdict_path.is_file():
+        lines.append(verdict_path.read_text(encoding="utf-8").strip())
+    else:
+        lines.append("(none)")
+    lines.extend(["", "## Kills"])
+    kills = [row for row in rows if row.status in {"killed", "failed"}]
+    if not kills:
+        lines.append("(none)")
+    else:
+        for row in kills:
+            lines.append(f"- {row.node_id} {row.rung}: {row.kill_reason}")
+    lines.extend(["", "## Survivors"])
+    survivors = list(getattr(decision, "survivors", []) or [])
+    if not survivors:
+        lines.append("(none)")
+    by_id = {item.node_id: item for item in getattr(decision, "decisions", [])}
+    for node_id in survivors:
+        item = by_id.get(node_id)
+        delta = None if item is None else item.delta
+        if delta is None:
+            lines.append(f"- {node_id}")
+        else:
+            lines.append(
+                f"- {node_id} delta {delta.point:.4f} CI [{delta.ci_lo:.4f}, {delta.ci_hi:.4f}]"
+            )
+    lines.extend(
+        ["", "## Spend", f"Spent {state.spent_dbu:.3f} / {state.budget_dbu:.3f} DBU", ""]
+    )
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _write_report(root: Path, state: RunState, brief: Brief) -> None:
+    del brief
+    path = root / "runs" / state.run_id / "report.md"
+    promoted = ", ".join(state.promoted) if state.promoted else "none"
+    lines = [
+        f"# Report {state.run_id}",
+        "",
+        f"Promoted: {promoted}",
+        f"Spent {state.spent_dbu:.3f} / {state.budget_dbu:.3f} DBU",
+        "",
+        "Live nodes: " + (", ".join(state.live_nodes) or "(none)"),
+        "",
+    ]
+    if not state.promoted:
+        lines.append("No candidate cleared the promotion rule.")
+    else:
+        lines.append("Confirmation scored the promoted nodes on select_holdout.")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _approved(root: Path, run_id: str) -> bool:
+    return (root / "runs" / run_id / "APPROVE").is_file()
+
+
+def _consume_approval(root: Path, run_id: str) -> None:
+    (root / "runs" / run_id / "APPROVE").unlink(missing_ok=True)
+

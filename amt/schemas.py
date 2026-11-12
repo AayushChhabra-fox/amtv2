@@ -314,6 +314,43 @@ class LedgerRow(BaseModel):
         return self
 
 
+class NodeWork(BaseModel):
+    """One node inside a search round. The walking skeleton leaves this empty."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str
+    family: str
+    operator: Operator = "draft"
+    parent_id: str | None = None
+    parents: list[str] = Field(default_factory=list)
+    claim: str = ""
+    change: str | None = None
+    fit_argument: str = ""
+    cheap_test: str = ""
+    kill_if: str = ""
+    est_cost: float = Field(default=0.1, ge=0)
+    rung: Rung = "R1"
+    seed: int = Field(default=0, ge=0)
+    search_round: int = Field(default=1, ge=0)
+    status: Literal[
+        "pending",
+        "implemented",
+        "debugging",
+        "ready",
+        "submitted",
+        "kept",
+        "killed",
+        "failed",
+    ] = "pending"
+    debug_attempts: int = Field(default=0, ge=0)
+    preflight: str | None = None
+    review: str | None = None
+    delta_point: float | None = None
+    delta_lo: float | None = None
+    delta_hi: float | None = None
+
+
 class RunState(BaseModel):
     """Resumable loop state. Settings are K, budget, and approval_mode."""
 
@@ -337,6 +374,15 @@ class RunState(BaseModel):
     batch: str
     git_sha: str = "unknown"
     stop_requested: bool = False
+    nodes: list[NodeWork] = Field(default_factory=list)
+    awaiting_approval: bool = False
+    approval_gate: str | None = None
+    round_operator: Operator = "draft"
+    critic_revisions: int = Field(default=0, ge=0)
+    outer_retries: int = Field(default=0, ge=0)
+    promoted: list[str] = Field(default_factory=list)
+    rung_index: int = Field(default=0, ge=0)
+    improvement_gains: list[float] = Field(default_factory=list)
 
 
 class AgentRevision(BaseModel):
