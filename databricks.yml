@@ -6,8 +6,8 @@ include:
 
 variables:
   experiment_name:
-    description: MLflow experiment used by every AMT training run.
-    default: /Shared/amt/nfy_article_rerank
+    description: Default MLflow experiment. Each brief overrides this with experiment_root/brief.
+    default: /Shared/amt/amt
   catalog:
     default: product_api_dev
   schema:
