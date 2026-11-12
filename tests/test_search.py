@@ -331,7 +331,7 @@ def test_round_shortlist_pauses_before_compute(tmp_path: Path, monkeypatch) -> N
     assert FakeJobs(tmp_path).submit_count() == 0
 
 
-def test_web_tools_check_reads_plan_mode_help(monkeypatch) -> None:
+def test_web_tools_check_reads_ask_mode_help(monkeypatch) -> None:
     import subprocess
 
     from amt import agents
@@ -343,7 +343,7 @@ def test_web_tools_check_reads_plan_mode_help(monkeypatch) -> None:
         return subprocess.CompletedProcess(
             command,
             0,
-            stdout="--mode plan\nHas access to all tools, including write and shell.\n",
+            stdout="--mode plan|ask\nHas access to all tools, including write and shell.\n",
             stderr="",
         )
 

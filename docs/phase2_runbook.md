@@ -33,7 +33,7 @@ export AMT_AGENT_BACKEND=cursor
 cursor-agent status
 ```
 
-`cursor-agent status` should show a login. The planner call fails if plan mode does not offer web search.
+`cursor-agent status` should show a login. The planner and critic run in ask mode; the planner call fails if ask mode does not offer web search.
 
 ## 1. Data validation
 

@@ -6,7 +6,8 @@ live backend. Flags confirmed from `cursor-agent --help`:
 - `-p` / `--print` non-interactive, with write and shell tools
 - `--output-format json|text|stream-json` (only with `--print`)
 - `--model <model>`
-- `--mode plan|ask` for read-only roles
+- `--mode ask` for read-only roles. Plan mode ends a headless run with a
+  CreatePlan call that is not saved, and `result` comes back empty.
 - `--force` to allow commands without prompts
 - `--trust` to accept the workspace
 - `--workspace <path>`
@@ -86,9 +87,9 @@ _WEB_TOOLS: bool | None = None
 
 
 def cursor_agent_web_tools_available() -> bool:
-    """True when this CLI can search the web from plan mode.
+    """True when this CLI can search the web from ask mode.
 
-    ``--help`` does not name web search on its own. Plan mode is read-only, and
+    ``--help`` does not name web search on its own. Ask mode is read-only, and
     ``--print`` says the process has every tool, so web search is in that set.
     The result is cached for the process. A missing signal is a hard failure
     for a live planner call, not a silent skip.
@@ -109,9 +110,9 @@ def cursor_agent_web_tools_available() -> bool:
         timeout=30,
     )
     text = f"{completed.stdout}\n{completed.stderr}".lower()
-    has_plan = "--mode" in text and "plan" in text
+    has_ask = "--mode" in text and "ask" in text
     has_tools = "web search" in text or "all tools" in text
-    _WEB_TOOLS = completed.returncode == 0 and has_plan and has_tools
+    _WEB_TOOLS = completed.returncode == 0 and has_ask and has_tools
     return _WEB_TOOLS
 
 
@@ -225,7 +226,7 @@ def run_role(
     try:
         if mode == "cursor" and role == "planner" and not cursor_agent_web_tools_available():
             raise RuntimeError(
-                "planner requires cursor-agent web search in plan mode; "
+                "planner requires cursor-agent web search in ask mode; "
                 "the CLI help text does not offer it"
             )
         if mode == "cursor":
@@ -356,7 +357,7 @@ def _run_cursor(
     if model:
         command.extend(["--model", model])
     if role in {"planner", "critic"}:
-        command.extend(["--mode", "plan"])
+        command.extend(["--mode", "ask"])
     if role in {"implementer", "reviewer"}:
         _set_active_role(root, role)
     command.append(prompt)

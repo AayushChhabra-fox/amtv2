@@ -30,7 +30,7 @@ Agent calls use `AMT_AGENT_BACKEND`:
 | Value | Behavior |
 | --- | --- |
 | `stub` | Default. Writes the pinned toy candidate. A search brief needs a real planner. |
-| `cursor` | Calls `cursor-agent -p`. The planner also requires plan mode with web search. |
+| `cursor` | Calls `cursor-agent -p`. The planner and critic run read-only in ask mode, and the planner requires web search. |
 | `auto` | Uses `cursor` when `cursor-agent status` shows a login, otherwise records the miss and uses the stub. |
 | `fake` | Test double. |
 
