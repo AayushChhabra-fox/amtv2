@@ -12,6 +12,19 @@ variables:
     default: product_api_dev
   schema:
     default: amt
+  cpu_node_type_id:
+    description: CPU node pinned for dataset, train, confirm, and latency runs.
+    default: m5d.xlarge
+  spark_version:
+    default: 15.4.x-scala2.12
+  artifact_volume:
+    default: /Volumes/product_api_dev/amt/amt_artifacts
+
+artifacts:
+  amt_wheel:
+    type: whl
+    path: .
+    build: uv build --wheel
 
 targets:
   dev:

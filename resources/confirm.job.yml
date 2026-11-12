@@ -1,0 +1,95 @@
+resources:
+  jobs:
+    confirm:
+      name: amt_confirm
+      timeout_seconds: 14400
+      max_concurrent_runs: 3
+      tags:
+        project: amt
+        component: confirm
+      parameters:
+        - name: candidate_id
+          default: c00
+        - name: seed
+          default: "0"
+        - name: batch
+          default: batch
+        - name: spec
+          default: datasets/nfy_article_rerank
+        - name: baseline
+          default: ""
+        - name: reference_score
+          default: production
+        - name: model
+          default: ""
+        - name: catalog
+          default: ${var.catalog}
+        - name: schema
+          default: ${var.schema}
+        - name: dataset_dir
+          default: ""
+        - name: experiment_name
+          default: ${var.experiment_name}
+        - name: git_sha
+          default: unknown
+        - name: family
+          default: candidate
+        - name: run_id
+          default: ""
+      tasks:
+        - task_key: confirm
+          new_cluster:
+            spark_version: ${var.spark_version}
+            node_type_id: ${var.cpu_node_type_id}
+            num_workers: 0
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.databricks.cluster.profile: singleNode
+              spark.master: local[*]
+            custom_tags:
+              ResourceClass: SingleNode
+            spark_env_vars:
+              AMT_ROOT: ${workspace.file_path}
+              AMT_NODE_TYPE: ${var.cpu_node_type_id}
+          libraries:
+            - whl: ../dist/*.whl
+            - pypi:
+                package: lightgbm
+            - pypi:
+                package: mlflow
+          spark_python_task:
+            python_file: ../harness/train.py
+            parameters:
+              - --confirmation
+              - --split
+              - select_holdout
+              - --rung
+              - R3
+              - --candidate_id
+              - "{{job.parameters.candidate_id}}"
+              - --seed
+              - "{{job.parameters.seed}}"
+              - --batch
+              - "{{job.parameters.batch}}"
+              - --spec
+              - "{{job.parameters.spec}}"
+              - --baseline
+              - "{{job.parameters.baseline}}"
+              - --reference-score
+              - "{{job.parameters.reference_score}}"
+              - --model
+              - "{{job.parameters.model}}"
+              - --catalog
+              - "{{job.parameters.catalog}}"
+              - --schema
+              - "{{job.parameters.schema}}"
+              - --dataset-dir
+              - "{{job.parameters.dataset_dir}}"
+              - --experiment-name
+              - "{{job.parameters.experiment_name}}"
+              - --git-sha
+              - "{{job.parameters.git_sha}}"
+              - --family
+              - "{{job.parameters.family}}"
+              - --run-id
+              - "{{job.parameters.run_id}}"

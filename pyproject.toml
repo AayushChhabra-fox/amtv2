@@ -4,6 +4,7 @@ version = "0.0.1"
 description = "Automated Model Trainer control loop"
 requires-python = ">=3.11"
 dependencies = [
+  "lightgbm>=4.3",
   "numpy>=1.26",
   "pydantic>=2.6",
   "pyyaml>=6.0",
@@ -22,6 +23,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["amt", "harness"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"datasets/nfy_article_rerank" = "datasets/nfy_article_rerank"
+"datasets/nfy_clip_rerank" = "datasets/nfy_clip_rerank"
 
 [tool.ruff]
 line-length = 100

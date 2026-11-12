@@ -1,0 +1,41 @@
+resources:
+  jobs:
+    pruner:
+      name: amt_pruner
+      timeout_seconds: 1800
+      max_concurrent_runs: 2
+      tags:
+        project: amt
+        component: pruner
+      parameters:
+        - name: metric
+          default: ""
+        - name: run_id
+          default: ""
+        - name: rung
+          default: R0
+      tasks:
+        - task_key: pruner
+          new_cluster:
+            spark_version: ${var.spark_version}
+            node_type_id: ${var.cpu_node_type_id}
+            num_workers: 0
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.databricks.cluster.profile: singleNode
+              spark.master: local[*]
+            custom_tags:
+              ResourceClass: SingleNode
+            spark_env_vars:
+              AMT_ROOT: ${workspace.file_path}
+          libraries:
+            - whl: ../dist/*.whl
+          spark_python_task:
+            python_file: ../amt/pruner.py
+            parameters:
+              - --metric
+              - "{{job.parameters.metric}}"
+              - --run-id
+              - "{{job.parameters.run_id}}"
+              - --rung
+              - "{{job.parameters.rung}}"

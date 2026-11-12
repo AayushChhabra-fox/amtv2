@@ -1,0 +1,46 @@
+resources:
+  jobs:
+    build_dataset:
+      name: amt_build_dataset
+      timeout_seconds: 21600
+      max_concurrent_runs: 1
+      tags:
+        project: amt
+        component: build_dataset
+      parameters:
+        - name: spec
+          default: datasets/nfy_article_rerank
+        - name: catalog
+          default: ${var.catalog}
+        - name: schema
+          default: ${var.schema}
+        - name: output_dir
+          default: ""
+      tasks:
+        - task_key: build_dataset
+          new_cluster:
+            spark_version: ${var.spark_version}
+            node_type_id: ${var.cpu_node_type_id}
+            num_workers: 4
+            data_security_mode: SINGLE_USER
+            spark_env_vars:
+              AMT_ROOT: ${workspace.file_path}
+          libraries:
+            - whl: ../dist/*.whl
+            - pypi:
+                package: lightgbm
+            - pypi:
+                package: mlflow
+          spark_python_task:
+            python_file: ../harness/data/build_dataset.py
+            parameters:
+              - --spec
+              - "{{job.parameters.spec}}"
+              - --backend
+              - spark
+              - --catalog
+              - "{{job.parameters.catalog}}"
+              - --schema
+              - "{{job.parameters.schema}}"
+              - --output-dir
+              - "{{job.parameters.output_dir}}"
