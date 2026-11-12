@@ -8,7 +8,7 @@ interpolated.
 from __future__ import annotations
 
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 
 from harness.data.contract import (
     _IDENT,
@@ -54,11 +54,26 @@ def scan_window(spec: DatasetSpec, start: date, end: date) -> tuple[date, date]:
     return start - timedelta(days=lookback), end + timedelta(days=pad_after_days)
 
 
-def render_params(spec: DatasetSpec, start: date, end: date) -> dict[str, str]:
+def render_params(
+    spec: DatasetSpec,
+    start: date,
+    end: date,
+    window: tuple[datetime, datetime] | None = None,
+) -> dict[str, str]:
+    """``{start}``/``{end}`` are days for partition filters; ``{start_ts}``/``{end_ts}``
+    bound query time as ``[start_ts, end_ts)`` and default to the whole days."""
+
     scan_start, scan_end = scan_window(spec, start, end)
+    if window is None:
+        window = (
+            datetime.combine(start, time()),
+            datetime.combine(end + timedelta(days=1), time()),
+        )
     params = {
         "start": start.isoformat(),
         "end": end.isoformat(),
+        "start_ts": _ts(window[0]),
+        "end_ts": _ts(window[1]),
         "scan_start": scan_start.isoformat(),
         "scan_end": scan_end.isoformat(),
         "entity_type": spec.entity_type or "",
@@ -175,10 +190,16 @@ def _ref_sql(expr: str, owners: dict[str, str]) -> str:
     return qualified
 
 
-def filtered_sql(select_sql: str, spec: DatasetSpec, start: date, end: date) -> str:
-    predicates = [
-        f"to_date(query_ts) BETWEEN DATE '{start.isoformat()}' AND DATE '{end.isoformat()}'"
-    ]
+def _ts(value: datetime) -> str:
+    return value.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _window_predicate(start: datetime, end: datetime) -> str:
+    return f"query_ts >= TIMESTAMP '{_ts(start)}' AND query_ts < TIMESTAMP '{_ts(end)}'"
+
+
+def filtered_sql(select_sql: str, spec: DatasetSpec, start: datetime, end: datetime) -> str:
+    predicates = [_window_predicate(start, end)]
     minimum = spec.include_min_label()
     if minimum is not None:
         predicates.append(
@@ -283,12 +304,12 @@ def violation_sqls(
     return statements
 
 
-def candidate_bounds_sql(spec: DatasetSpec, select_sql: str, start: date, end: date) -> str:
+def candidate_bounds_sql(
+    spec: DatasetSpec, select_sql: str, start: datetime, end: datetime
+) -> str:
     """Example queries that fall outside ``candidate_bounds`` after the split filter."""
 
-    predicates = [
-        f"to_date(query_ts) BETWEEN DATE '{start.isoformat()}' AND DATE '{end.isoformat()}'"
-    ]
+    predicates = [_window_predicate(start, end)]
     minimum = spec.include_min_label()
     if minimum is not None:
         predicates.append(

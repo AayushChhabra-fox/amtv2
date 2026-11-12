@@ -12,7 +12,7 @@ import json
 import os
 import sqlite3
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -166,12 +166,13 @@ def _prepare_sources(executor, spec: DatasetSpec, start: date, end: date) -> Non
 def _expected_metrics(spec: DatasetSpec, executor: SqliteExecutor) -> dict[str, float]:
     expected: dict[str, float] = {}
     ranges = {name: (start, end) for name, start, end in spec.split_ranges()}
+    windows = {name: (start, end) for name, start, end in spec.split_windows()}
     for check in spec.checks:
         if not check.expected or not check.split:
             continue
         start, end = ranges[check.split]
         _prepare_sources(executor, spec, start, end)
-        params = render_params(spec, start, end)
+        params = render_params(spec, start, end, windows[check.split])
         rows = executor.execute(render(spec.sql_text(check.expected), params))
         if not rows:
             raise DatasetBuildError("check", f"{check.name} expected SQL returned no rows")
@@ -271,9 +272,10 @@ def build_local(
         )
     executor = SqliteExecutor(connection)
     rows_by_split: dict[str, list[dict]] = {}
+    windows = {name: (start, end) for name, start, end in spec.split_windows()}
     for split_name, start, end in spec.split_ranges():
         _prepare_sources(executor, spec, start, end)
-        params = render_params(spec, start, end)
+        params = render_params(spec, start, end, windows[split_name])
         loaded = {name: executor.execute(sql) for name, sql in fragment_selects(spec, params)}
         features = {
             name: rows
@@ -311,6 +313,11 @@ def _full_span(spec: DatasetSpec) -> tuple[date, date]:
 
     ranges = spec.split_ranges()
     return min(start for _, start, _ in ranges), max(end for _, _, end in ranges)
+
+
+def _full_window(spec: DatasetSpec) -> tuple[datetime, datetime]:
+    windows = spec.split_windows()
+    return min(start for _, start, _ in windows), max(end for _, _, end in windows)
 
 
 def _stage(
@@ -362,7 +369,9 @@ def build_spark(
     staged: list[str] = []
     span_start, span_end = _full_span(spec)
     _prepare_sources(executor, spec, span_start, span_end)
-    fragments = fragment_selects(spec, render_params(spec, span_start, span_end))
+    fragments = fragment_selects(
+        spec, render_params(spec, span_start, span_end, _full_window(spec))
+    )
     for name, sql in fragments:
         view = f"amt_frag_{name}"
         executor.replace_view(view, sql)
@@ -391,7 +400,7 @@ def build_spark(
     )
     staged.append(assembled)
     assembled_sql = f"SELECT * FROM {assembled}"
-    for split_name, start, end in spec.split_ranges():
+    for split_name, start, end in spec.split_windows():
         bounds = candidate_bounds_sql(spec, assembled_sql, start, end)
         if bounds:
             examples = executor.execute(bounds)
@@ -453,12 +462,13 @@ def build_spark(
 
     expected: dict[str, float] = {}
     ranges = {name: (start, end) for name, start, end in spec.split_ranges()}
+    windows = {name: (start, end) for name, start, end in spec.split_windows()}
     for check in spec.checks:
         if not check.expected or not check.split:
             continue
         start, end = ranges[check.split]
         _prepare_sources(executor, spec, start, end)
-        params = render_params(spec, start, end)
+        params = render_params(spec, start, end, windows[check.split])
         rows = executor.execute(render(spec.sql_text(check.expected), params))
         if not rows or "metric" not in rows[0]:
             raise DatasetBuildError("check", f"{check.name} expected SQL needs a metric column")

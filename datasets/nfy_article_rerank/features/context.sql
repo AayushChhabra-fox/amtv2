@@ -8,3 +8,5 @@ SELECT
 FROM {requests} AS r
 WHERE r.entity_type = '{entity_type}'
   AND r.event_date BETWEEN DATE '{start}' AND DATE '{end}'
+  AND r.request_ts >= TIMESTAMP '{start_ts}'
+  AND r.request_ts < TIMESTAMP '{end_ts}'

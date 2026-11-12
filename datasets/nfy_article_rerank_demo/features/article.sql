@@ -3,7 +3,7 @@
 -- news_article_feature keeps a row per headline revision, so the title is the
 -- first one recorded (earliest etl_created_date), not a later edit.
 -- publish_date is overwritten when an article is republished. An article whose
--- publish_date is after its first serve in [start, end] has attributes from
+-- publish_date is after its first serve in the build window has attributes from
 -- after some requests, so it gets no row (null article features) instead.
 WITH first_served AS (
   SELECT entity_id, MIN(request_ts) AS first_served_ts
@@ -11,6 +11,8 @@ WITH first_served AS (
   WHERE candidate_status = 'served'
     AND entity_type = '{entity_type}'
     AND event_date BETWEEN DATE '{start}' AND DATE '{end}'
+    AND request_ts >= TIMESTAMP '{start_ts}'
+    AND request_ts < TIMESTAMP '{end_ts}'
   GROUP BY entity_id
 ),
 first_title AS (

@@ -33,5 +33,7 @@ FROM (
   WHERE c.candidate_status = 'served'
     AND c.entity_type = '{entity_type}'
     AND c.event_date BETWEEN DATE '{start}' AND DATE '{end}'
+    AND c.request_ts >= TIMESTAMP '{start_ts}'
+    AND c.request_ts < TIMESTAMP '{end_ts}'
 ) AS ranked
 WHERE ranked.rn = 1

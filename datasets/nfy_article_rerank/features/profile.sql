@@ -24,3 +24,5 @@ LEFT JOIN {profiles} AS p
  AND p.profile_content_hash = r.profile_content_hash
 WHERE r.entity_type = '{entity_type}'
   AND r.event_date BETWEEN DATE '{start}' AND DATE '{end}'
+  AND r.request_ts >= TIMESTAMP '{start_ts}'
+  AND r.request_ts < TIMESTAMP '{end_ts}'

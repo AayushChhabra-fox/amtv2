@@ -251,7 +251,7 @@ flowchart LR
   - `reference_scores`: existing production score columns, used as baselines.
   - `filters`: for example, `include_query_if`.
   - `forbidden_columns`.
-  - `split`: the time column, windows for `train`, `search_val`, `select_holdout` and `final_holdout`, and `gap_days`.
+  - `split`: the time column, windows for `train`, `search_val`, `select_holdout` and `final_holdout`, and `gap_days` (plus optional `gap_hours`). A window is whole days (`2026-09-14..2026-10-18`, end day included) or hours (`2026-10-07T12:00..2026-10-07T15:00`, end excluded); fragments get the days as `{start}`/`{end}` and the query-time bounds as `{start_ts}`/`{end_ts}`.
   - `sampling`: the smoke sample size, the data fraction for each rung and the evaluation query cap.
   - `checks`: optional dataset-specific assertions, for example "the reference metric reproduces within 0.005".
 - **Output contract**, `harness/data/contract.py`. Every dataset produces the same columns:

@@ -45,7 +45,9 @@ SEARCH_SPLITS: frozenset[str] = frozenset({"train", "search_val"})
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _WINDOW = re.compile(r"^(\d+)([mhd])$")
 _INCLUDE = re.compile(r"^max\(label\)\s*>=\s*(-?\d+(?:\.\d+)?)$")
-_DATE_SPAN = re.compile(r"^(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})$")
+_SPAN = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2})?)\.\.(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2})?)$"
+)
 
 
 class DatasetBuildError(ValueError):
@@ -138,6 +140,7 @@ class SplitSpec(BaseModel):
 
     time_col: str = "query_ts"
     gap_days: int = Field(ge=0)
+    gap_hours: int = Field(default=0, ge=0)
     train: str
     search_val: str
     select_holdout: str
@@ -294,11 +297,18 @@ class DatasetSpec(BaseModel):
         return self
 
     def split_ranges(self) -> list[tuple[str, date, date]]:
+        """First and last day each split touches, for partition filters."""
+
         ranges = []
         for name in SPLIT_NAMES:
             start, end = parse_date_span(getattr(self.split, name))
             ranges.append((name, start, end))
         return ranges
+
+    def split_windows(self) -> list[tuple[str, datetime, datetime]]:
+        """Half-open ``[start, end)`` query_ts window per split."""
+
+        return [(name, *parse_span(getattr(self.split, name))) for name in SPLIT_NAMES]
 
     def include_min_label(self) -> float | None:
         if not self.filters.include_query_if:
@@ -351,35 +361,48 @@ def parse_label_window(value: str) -> timedelta:
     return timedelta(days=count)
 
 
-def parse_date_span(value: str) -> tuple[date, date]:
-    match = _DATE_SPAN.match(value.strip())
+def parse_span(value: str) -> tuple[datetime, datetime]:
+    """``[start, end)`` for ``2026-09-14..2026-10-18`` or ``2026-10-07T12:00..2026-10-07T15:00``.
+
+    A date end covers that whole day; a timestamp end is exclusive.
+    """
+
+    match = _SPAN.match(value.strip())
     if not match:
-        raise ValueError(f"date window must look like 2026-09-14..2026-10-18, got {value!r}")
-    start = date.fromisoformat(match.group(1))
-    end = date.fromisoformat(match.group(2))
-    if end < start:
+        raise ValueError(
+            "window must look like 2026-09-14..2026-10-18 or "
+            f"2026-10-07T12:00..2026-10-07T15:00, got {value!r}"
+        )
+    start_text, end_text = match.group(1), match.group(2)
+    if ("T" in start_text) != ("T" in end_text):
+        raise ValueError(f"window ends must both be dates or both be timestamps: {value}")
+    start = datetime.fromisoformat(start_text)
+    end = datetime.fromisoformat(end_text)
+    if "T" not in end_text:
+        end += timedelta(days=1)
+    if end <= start:
         raise ValueError(f"window ends before it starts: {value}")
     return start, end
 
 
+def parse_date_span(value: str) -> tuple[date, date]:
+    start, end = parse_span(value)
+    return start.date(), (end - timedelta(microseconds=1)).date()
+
+
 def validate_windows(split: SplitSpec) -> None:
-    ranges = []
-    for name in SPLIT_NAMES:
-        start, end = parse_date_span(getattr(split, name))
-        ranges.append((name, start, end))
-    for (left_name, left_start, left_end), (right_name, right_start, _right_end) in zip(
+    ranges = [(name, *parse_span(getattr(split, name))) for name in SPLIT_NAMES]
+    required = timedelta(days=split.gap_days, hours=split.gap_hours)
+    for (left_name, _left_start, left_end), (right_name, right_start, _right_end) in zip(
         ranges, ranges[1:], strict=False
     ):
-        if right_start <= left_end:
+        if right_start < left_end:
             raise ValueError(f"{left_name} overlaps {right_name}")
-        gap = (right_start - left_end).days - 1
-        if gap < split.gap_days:
+        gap = right_start - left_end
+        if gap < required:
             raise ValueError(
-                f"gap between {left_name} and {right_name} is {gap} days, "
-                f"spec requires {split.gap_days}"
+                f"gap between {left_name} and {right_name} is {gap}, spec requires {required}"
             )
-        if left_start > left_end:
-            raise ValueError(f"{left_name} is empty")
 
 
 def load_spec(path: str | Path) -> DatasetSpec:
@@ -431,9 +454,11 @@ def as_day(value: Any) -> date:
 
 
 def assign_split(spec: DatasetSpec, query_ts: Any) -> str | None:
-    day = as_day(query_ts)
-    for name, start, end in spec.split_ranges():
-        if start <= day <= end:
+    moment = as_datetime(query_ts)
+    if moment is None:
+        raise DatasetBuildError("contract", "missing query_ts")
+    for name, start, end in spec.split_windows():
+        if start <= moment < end:
             return name
     return None
 
