@@ -18,6 +18,7 @@ from amt.noise import build_noise_report, round0_jobs
 from amt.schemas import Brief
 from amt.scores import scores_path
 from amt.signoff import write_ladder_report, write_noise_report
+from harness.ladder import LADDER_DESIGNS
 
 
 def submit_noise(root: Path, brief: Brief, spec_path: str, reference_scores: list[str]) -> Path:
@@ -79,7 +80,8 @@ def collect_ladder(
     r1_train_fraction: float | None,
 ) -> tuple[str, Path]:
     run_name = f"ladder-{dataset}"
-    rows = _search(root, run_name)
+    current = {design.design_id for design in LADDER_DESIGNS}
+    rows = [row for row in _search(root, run_name) if _cell_id(row.get("tags") or {}) in current]
     cells = [_ladder_cell(row) for row in _newest(rows, scored=True)]
     path = root / "runs" / run_name / "ladder.json"
     path.write_text(json.dumps(cells, indent=2) + "\n", encoding="utf-8")
