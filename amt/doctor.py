@@ -89,6 +89,8 @@ def _auth_method() -> str:
 def _agent_line() -> str:
     if shutil.which("cursor-agent") is None:
         return "cursor-agent: not installed"
+    if os.environ.get("CURSOR_API_KEY", "").strip():
+        return "cursor-agent: CURSOR_API_KEY set"
     completed = subprocess.run(
         ["cursor-agent", "status"],
         check=False,

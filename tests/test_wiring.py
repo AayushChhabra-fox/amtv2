@@ -323,3 +323,12 @@ def test_deploy_command_vars_match_settings(monkeypatch) -> None:
     rendered = yaml.safe_load((ROOT / "databricks.yml").read_text(encoding="utf-8"))
     assert "catalog" in rendered["variables"]
     assert "schema" in rendered["variables"]
+
+
+def test_cursor_api_key_counts_as_logged_in(monkeypatch) -> None:
+    import amt.agents as agents
+
+    monkeypatch.setattr(agents, "cursor_agent_bin", lambda: "/bin/cursor-agent")
+    monkeypatch.setattr(agents.subprocess, "run", lambda *a, **k: pytest.fail("status ran"))
+    monkeypatch.setenv("CURSOR_API_KEY", "key")
+    assert agents.cursor_agent_logged_in()

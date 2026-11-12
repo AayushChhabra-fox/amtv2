@@ -119,6 +119,9 @@ def cursor_agent_logged_in() -> bool:
     binary = cursor_agent_bin()
     if binary is None:
         return False
+    # `status` reports only a browser login; -p calls also accept CURSOR_API_KEY.
+    if os.environ.get("CURSOR_API_KEY", "").strip():
+        return True
     completed = subprocess.run(
         [binary, "status"],
         check=False,
