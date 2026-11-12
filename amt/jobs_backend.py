@@ -160,6 +160,7 @@ class DatabricksJobs:
     ) -> str:
         del job_key
         _check_params(job, params)
+        params = _bundle_relative_spec(self.root, params)
         from amt.deploy import assert_fresh
 
         assert_fresh(self.root)
@@ -309,6 +310,20 @@ class DatabricksJobs:
             run_tags = {item["key"]: item["value"] for item in data.get("tags", [])}
             found.append(_metric_row(info.get("run_id"), metrics, run_tags))
         return found
+
+
+def _bundle_relative_spec(root: Path, params: dict) -> dict:
+    """Jobs resolve ``spec`` against the deployed bundle, so a local absolute path
+    under the repo is sent relative to it."""
+
+    spec = str(params.get("spec") or "")
+    if not spec.startswith("/"):
+        return params
+    try:
+        relative = Path(spec).resolve().relative_to(Path(root).resolve())
+    except ValueError:
+        return params
+    return {**params, "spec": relative.as_posix()}
 
 
 def _gpu_existing(params: dict, settings) -> bool:

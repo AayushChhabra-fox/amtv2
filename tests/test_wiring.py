@@ -279,6 +279,15 @@ def test_fixed_cluster_payload_has_no_new_cluster() -> None:
     assert "whl" not in rendered
 
 
+def test_spec_is_sent_relative_to_the_bundle(tmp_path: Path) -> None:
+    from amt.jobs_backend import _bundle_relative_spec
+
+    local = str(tmp_path / "datasets" / "demo")
+    assert _bundle_relative_spec(tmp_path, {"spec": local})["spec"] == "datasets/demo"
+    assert _bundle_relative_spec(tmp_path, {"spec": "datasets/demo"})["spec"] == "datasets/demo"
+    assert _bundle_relative_spec(tmp_path, {"spec": "/elsewhere/x"})["spec"] == "/elsewhere/x"
+
+
 def test_fixed_cluster_payload_fills_an_empty_root(monkeypatch) -> None:
     monkeypatch.setenv("AMT_CLUSTER_ID", "cluster-1")
     body = existing_cluster_payload(
