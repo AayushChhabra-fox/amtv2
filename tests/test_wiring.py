@@ -182,6 +182,12 @@ def test_collect_keeps_the_newest_scored_run_per_cell(tmp_path: Path, monkeypatc
     collected = amt.batch._collect(tmp_path, "round0-x")
     assert [(row["tags"]["candidate_id"], row["metric"]) for row in collected] == [("random", 0.5)]
 
+    legacy = {"node_id": "matrix", "family": "ref.production", "rung": "R1", "seed": "2"}
+    assert amt.batch._noise_cell({"metric": 0.4, "tags": legacy})["baseline_id"] == "production"
+    legacy_lgbm = {**legacy, "family": "lgbm_reference"}
+    assert amt.batch._cell_id(legacy_lgbm) == "lgbm_reference"
+    assert amt.batch._cell_id({"node_id": "matrix", "family": "matrix"}) == "matrix"
+
 
 def test_volume_calls_use_dbfs_uris(tmp_path: Path, monkeypatch) -> None:
     import subprocess

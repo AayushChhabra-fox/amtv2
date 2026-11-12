@@ -173,6 +173,7 @@ def _submit_matrix(
         cells = []
         for job in group:
             cell = job.params()
+            cell.setdefault("node_id", job.candidate_id)
             if job.candidate_id in write_for:
                 cell["write_scores"] = scores_path(
                     root, spec_name, job.candidate_id, job.rung, job.seed, settings=settings
@@ -255,25 +256,36 @@ def _collect(root: Path, run_name: str) -> list[dict]:
     latest: dict[tuple[str, str, str], dict] = {}
     for row in rows:
         tags = row.get("tags") or {}
-        if str(tags.get("candidate_id") or "") == "matrix" or row.get("metric") is None:
+        if _cell_id(tags) == "matrix" or row.get("metric") is None:
             continue
-        key = (str(tags.get("candidate_id")), str(tags.get("rung")), str(tags.get("seed")))
+        key = (_cell_id(tags), str(tags.get("rung")), str(tags.get("seed")))
         kept = latest.get(key)
         if kept is None or int(row.get("start_time") or 0) >= int(kept.get("start_time") or 0):
             latest[key] = row
     return list(latest.values())
 
 
+def _cell_id(tags: dict) -> str:
+    """Matrix cells logged before each set its own node_id carry the id only in family."""
+
+    ids = [str(tags.get(key) or "") for key in ("candidate_id", "node_id")]
+    for value in ids:
+        if value and value != "matrix":
+            return value
+    family = str(tags.get("family") or "").removeprefix("ref.")
+    return family or ("matrix" if "matrix" in ids else "")
+
+
 def _noise_cell(row: dict) -> dict:
     tags = row.get("tags") or row
     cell = {
-        "baseline_id": tags.get("candidate_id"),
+        "baseline_id": _cell_id(tags),
         "rung": tags.get("rung"),
         "seed": int(tags.get("seed") or 0),
         "split": "search_val",
         "metric": float(row.get("metric") or 0.0),
     }
-    if tags.get("candidate_id") != "production" and row.get("delta_point") is not None:
+    if cell["baseline_id"] != "production" and row.get("delta_point") is not None:
         cell["delta_point"] = float(row["delta_point"])
         cell["delta_ci_lo"] = float(row.get("delta_ci_lo") or 0.0)
         cell["delta_ci_hi"] = float(row.get("delta_ci_hi") or 0.0)
@@ -283,7 +295,7 @@ def _noise_cell(row: dict) -> dict:
 def _ladder_cell(row: dict) -> dict:
     tags = row.get("tags") or row
     return {
-        "design_id": tags.get("candidate_id"),
+        "design_id": _cell_id(tags),
         "rung": tags.get("rung"),
         "seed": int(tags.get("seed") or 0),
         "split": "search_val",
