@@ -6,8 +6,11 @@
 # that window. context_embedding_3072 is the article vector on
 # product_api_prod.news_for_you.news_candidates_feature; it is not a
 # feature here because the column is a current snapshot.
-# Short windows inside the NFY train range, so a demo never touches the
-# NFY search or holdout dates. SQL is shared with nfy_article_rerank.
+# Shadow run: six hours (12:00-18:00 UTC, the daily peak) inside the NFY train
+# range, so a demo never touches the NFY search or holdout dates. The 24h
+# label window outlasts the zero-hour gaps, so later splits are not
+# label-independent of train; scores are for comparing candidates only.
+# SQL is shared with nfy_article_rerank.
 name: nfy_article_rerank_demo
 task_type: ranking
 entity_type: article
@@ -97,11 +100,11 @@ candidate_bounds:
 
 split:
   time_col: query_ts
-  gap_days: 1
-  train: 2026-10-01..2026-10-07
-  search_val: 2026-10-09..2026-10-10
-  select_holdout: 2026-10-12..2026-10-13
-  final_holdout: 2026-10-15..2026-10-16
+  gap_days: 0
+  train: 2026-10-07T12:00..2026-10-07T15:00
+  search_val: 2026-10-07T15:00..2026-10-07T16:00
+  select_holdout: 2026-10-07T16:00..2026-10-07T17:00
+  final_holdout: 2026-10-07T17:00..2026-10-07T18:00
 
 sampling:
   seed: 0
@@ -111,10 +114,10 @@ sampling:
   rungs:
     R1:
       train_fraction: 0.10
-      eval_queries: 2000
+      eval_queries: 1000
     R2:
       train_fraction: 0.40
-      eval_queries: 4000
+      eval_queries: 2000
     R3:
       train_fraction: 1.00
       eval_queries: all
@@ -128,5 +131,6 @@ checks:
     tol: 0.005
   - name: queries_per_day
     min: 100
+  # 15:00-18:00 UTC averages about 18.8 candidates per usable query.
   - name: candidates_per_query_mean
-    between: [20, 40]
+    between: [15, 40]

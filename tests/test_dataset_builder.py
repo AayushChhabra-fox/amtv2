@@ -416,7 +416,12 @@ def test_spark_build_scans_sources_once_and_stages_fragments(tmp_path: Path) -> 
     source_views = [s for s in statements if s.startswith("CREATE OR REPLACE TEMP VIEW amt_src_")]
     assert len(source_views) == len(spec.sources)
     requests = next(s for s in source_views if "amt_src_requests " in s)
-    assert "BETWEEN DATE '2026-09-24' AND DATE '2026-10-17'" in requests
+    assert "BETWEEN DATE '2026-09-30' AND DATE '2026-10-08'" in requests
+    queries = next(
+        s for s in statements if s.startswith("CREATE OR REPLACE TEMP VIEW amt_frag_queries")
+    )
+    assert "request_ts >= TIMESTAMP '2026-10-07 12:00:00'" in queries
+    assert "request_ts < TIMESTAMP '2026-10-07 18:00:00'" in queries
 
     fragments = ["queries", "candidates", "labels", *spec.feature_groups]
     for name in fragments:
@@ -440,6 +445,9 @@ def test_spark_build_scans_sources_once_and_stages_fragments(tmp_path: Path) -> 
     ]
     assert len(split_writes) == 4
     assert all(f"FROM {prefix}_stage_assembled`" in s for s in split_writes)
+    search_val = next(s for s in split_writes if f"{prefix}_search_val`" in s)
+    assert "query_ts >= TIMESTAMP '2026-10-07 15:00:00'" in search_val
+    assert "query_ts < TIMESTAMP '2026-10-07 16:00:00'" in search_val
     assert not any("amt_frag_" in s or "amt_src_" in s for s in split_writes)
 
     dropped = [s for s in statements if s.startswith("DROP TABLE IF EXISTS")]
@@ -463,6 +471,53 @@ def test_overlapping_windows_rejected(tmp_path: Path) -> None:
         )
     )
     with pytest.raises(ValidationError, match="overlaps"):
+        load_spec(dest)
+
+
+def test_hour_windows_split_one_day(tmp_path: Path) -> None:
+    from harness.data.contract import assign_split
+
+    spec = load_spec(ROOT / "datasets" / "nfy_article_rerank_demo")
+    assert [(name, start, end) for name, start, end in spec.split_ranges()] == [
+        (name, date(2026, 10, 7), date(2026, 10, 7))
+        for name in ("train", "search_val", "select_holdout", "final_holdout")
+    ]
+    assert assign_split(spec, "2026-10-07 11:59:59") is None
+    assert assign_split(spec, "2026-10-07 12:00:00") == "train"
+    assert assign_split(spec, "2026-10-07 14:59:59.9") == "train"
+    assert assign_split(spec, "2026-10-07 15:00:00") == "search_val"
+    assert assign_split(spec, "2026-10-07 17:30:00") == "final_holdout"
+    assert assign_split(spec, "2026-10-07 18:00:00") is None
+
+    full = load_spec(ROOT / "datasets" / "nfy_article_rerank")
+    assert assign_split(full, "2026-10-18 23:59:59") == "train"
+    assert assign_split(full, "2026-10-19 00:00:00") is None
+    params = render_params(full, date(2026, 10, 20), date(2026, 10, 26))
+    assert params["start_ts"] == "2026-10-20 00:00:00"
+    assert params["end_ts"] == "2026-10-27 00:00:00"
+
+    source = ROOT / "datasets" / "nfy_article_rerank_demo"
+    dest = tmp_path / "gap"
+    dest.mkdir()
+    for path in source.rglob("*"):
+        if path.is_file():
+            target = dest / path.relative_to(source)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(path.read_text())
+    spec_path = dest / "dataset.yaml"
+    text = spec_path.read_text()
+    spec_path.write_text(text.replace("gap_days: 0", "gap_days: 0\n  gap_hours: 1"))
+    with pytest.raises(ValidationError, match="spec requires 1:00:00"):
+        load_spec(dest)
+    spec_path.write_text(
+        text.replace("final_holdout: 2026-10-07T17:00", "final_holdout: 2026-10-07T16:30")
+    )
+    with pytest.raises(ValidationError, match="overlaps"):
+        load_spec(dest)
+    spec_path.write_text(
+        text.replace("T17:00..2026-10-07T18:00", "T17:00..2026-10-08")
+    )
+    with pytest.raises(ValidationError, match="both be dates or both be timestamps"):
         load_spec(dest)
 
 
