@@ -94,13 +94,16 @@ def source_view_sql(spec: DatasetSpec, start: date, end: date) -> list[tuple[str
     }
     for name, source in spec.sources.items():
         table = quote_table(source.table)
+        projection = "*"
+        if source.columns:
+            projection = ", ".join(quote_column(column) for column in source.columns)
         if source.partition_filter:
             if source.date_col:
                 filter_params["date_col"] = source.date_col
             predicate = render(source.partition_filter, filter_params)
-            body = f"SELECT * FROM {table} WHERE {predicate}"
+            body = f"SELECT {projection} FROM {table} WHERE {predicate}"
         else:
-            body = f"SELECT * FROM {table}"
+            body = f"SELECT {projection} FROM {table}"
         views.append((f"amt_src_{name}", body))
     return views
 

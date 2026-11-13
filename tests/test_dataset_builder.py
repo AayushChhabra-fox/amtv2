@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from datetime import date
 from pathlib import Path
@@ -452,6 +453,102 @@ def test_spark_build_scans_sources_once_and_stages_fragments(tmp_path: Path) -> 
 
     dropped = [s for s in statements if s.startswith("DROP TABLE IF EXISTS")]
     assert len(dropped) == len(fragments) + 1
+
+
+class _V2Frame(_Frame):
+    columns = [
+        "query_id",
+        "item_id",
+        "query_ts",
+        "label",
+        "label_event_ts",
+        "click",
+        "neg_shown_order",
+        "neg_item_age_hours",
+        "published_ts",
+        "activity_window_end",
+        "user_window_end",
+        "user_item_window_end",
+        "value",
+    ]
+
+
+class _V2Spark(_RecordingSpark):
+    def sql(self, text: str) -> _Result:
+        if "AS metric" in text:
+            self.statements.append(text)
+            return _Result([{"metric": 0.5}])
+        return super().sql(text)
+
+    def table(self, _name: str) -> _Frame:
+        return _V2Frame()
+
+
+def test_v2_spec_stages_each_warehouse_source_once(tmp_path: Path) -> None:
+    from harness.data.build_dataset import build_spark
+
+    spec = load_spec(ROOT / "datasets" / "nfy_article_rerank_v2")
+    assert [name for name, source in spec.sources.items() if source.materialize] == [
+        "impressions",
+        "interactions",
+    ]
+    views = dict(source_view_sql(spec, date(2026, 10, 2), date(2026, 10, 9)))
+    impressions = views["amt_src_impressions"]
+    assert impressions.startswith("SELECT `xid`, `session_id`, `entity_id`, `event_created`")
+    assert "TIMESTAMP '2026-10-01 00:00:00'" in impressions
+    assert "page_type = 'for-you'" in impressions
+    assert "context_embedding_3072" not in views["amt_src_interactions"]
+    params = render_params(spec, date(2026, 10, 2), date(2026, 10, 9))
+    rendered = dict(fragment_selects(spec, params))
+    assert "item_index" not in rendered["queries"]
+
+    spark = _V2Spark()
+    with pytest.raises(DatasetBuildError, match="ref__production"):
+        build_spark(spec, spark, catalog="cat", schema="sch", output_dir=tmp_path)
+    statements = spark.statements
+    prefix = f"`cat`.`sch`.`{spec.name}"
+    for name in ("impressions", "interactions"):
+        staged = (
+            f"CREATE OR REPLACE TABLE {prefix}_stage_src_{name}` AS SELECT * FROM amt_src_{name}"
+        )
+        assert statements.count(staged) == 1
+        repoint = (
+            f"CREATE OR REPLACE TEMP VIEW amt_src_{name} AS "
+            f"SELECT * FROM {prefix}_stage_src_{name}`"
+        )
+        assert statements.count(repoint) == 1
+        assert statements.index(staged) < statements.index(repoint)
+    raw_views = [
+        s
+        for s in statements
+        if s.startswith("CREATE OR REPLACE TEMP VIEW amt_src_") and "pnr_prod" in s
+    ]
+    assert len(raw_views) == 2
+    first_fragment = next(
+        i for i, s in enumerate(statements) if s.startswith("CREATE OR REPLACE TEMP VIEW amt_frag_")
+    )
+    assert statements.index(
+        f"CREATE OR REPLACE TEMP VIEW amt_src_interactions AS "
+        f"SELECT * FROM {prefix}_stage_src_interactions`"
+    ) < first_fragment
+    assert any("AS metric" in s for s in statements)
+
+
+def test_gold_spec_reads_one_sampled_source_and_feeds_every_ladder_family() -> None:
+    spec = load_spec(ROOT / "datasets" / "nfy_article_rerank_gold")
+    assert list(spec.sources) == ["gold"]
+    assert spec.sources["gold"].materialize
+    view = dict(source_view_sql(spec, date(2026, 10, 11), date(2026, 10, 18)))["amt_src_gold"]
+    assert "pmod(xxhash64(xid), 10) = 0" in view
+    assert "AND impressed" in view
+    assert spec.reference_scores == {"production": "neg_rank", "recency": "neg_item_age_hours"}
+    params = render_params(spec, date(2026, 10, 11), date(2026, 10, 18))
+    rendered = dict(fragment_selects(spec, params))
+    assert "AS recency" in rendered["prod_signals"]
+    assert "AS category" in rendered["prod_signals"]
+    for name in ["labels", *spec.feature_groups]:
+        code = re.sub(r"--[^\n]*", "", rendered[name])
+        assert not re.search(r"\b(rank|total_score)\b", code), name
 
 
 def test_overlapping_windows_rejected(tmp_path: Path) -> None:

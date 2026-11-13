@@ -1,0 +1,221 @@
+# NFY article rerank, gold: one week of NFY article requests from the reranker
+# training table, which already joins each served article to its impression,
+# read grade, and the serving-time features.
+# A query is one request. Its candidates are the articles the user was shown
+# for that request, the first 50 in production rank order. The label is the
+# table's relevance_grade: 3 deep read, 2 engaged read, 1 bounce or click
+# without a read, 0 shown only.
+# Only 1 in 10 users is kept, by a hash of xid.
+# The week sits inside nfy_article_rerank's train range, so it never touches
+# that spec's search or holdout dates. Splits run 10:00-08:00 UTC; the two-hour
+# gaps at the overnight low cover the label window.
+name: nfy_article_rerank_gold
+task_type: ranking
+entity_type: article
+primary_metric: ndcg@10_graded
+
+output:
+  catalog: product_api_dev
+  schema: amt
+
+sources:
+  gold:
+    table: product_api_dev.news_for_you.gold_nfy_reranker_training
+    date_col: event_date
+    materialize: true
+    columns:
+      - request_id
+      - entity_id
+      - request_ts
+      - xid
+      - rank
+      - total_score
+      - relevance_grade
+      - clicked
+      - impression_ts
+      - sig_cosine
+      - sig_category
+      - sig_iptc_category
+      - sig_entity_people
+      - sig_entity_orgs
+      - sig_entity_locations
+      - sig_recency
+      - sig_velocity
+      - sig_breaking
+      - sig_continuity
+      - sig_local
+      - sig_visual_clickability
+      - n_buckets
+      - is_backfill
+      - cold_start
+      - profile_staleness_seconds
+      - n_story_ids_last_10
+      - n_story_ids_last_30
+      - n_articles_category_slugs_top_10
+      - n_recent_category_slugs
+      - n_people_top_20
+      - n_organisations_top_20
+      - n_locations_top_20
+      - n_iptc_categories_top_20
+      - n_people_last_10
+      - n_organisations_last_10
+      - n_locations_last_10
+      - n_iptc_categories_last_10
+      - max_items
+      - candidates_raw
+      - hr
+      - day_of_week
+      - category_slug
+      - primary_topic
+      - word_count
+      - approx_read_time_min
+      - is_breaking
+      - item_age_seconds
+      - tone
+      - bias
+      - geo_scope
+      - sentiment
+      - complexity
+      - evergreen
+      - publish_date
+      - enrichment_version_ts
+      - n_react_article_72h
+      - n_react_comment_72h
+      - n_comment_72h
+      - n_reply_72h
+      - n_users_72h
+      - n_commenters_72h
+      - n_react_article_15m
+      - n_react_comment_15m
+      - n_comment_15m
+      - n_reply_15m
+      - story_unique_users_72h
+      - community_acceleration_pct
+      - reactions_per_comment_pct
+      - community_weighted_events_pct
+      - community_score
+      - item_popularity_pct
+      - item_prior_ctr
+      - f_cat_in_top_10
+      - f_cat_rank_in_top_10
+      - f_story_in_last_10
+      - f_story_in_last_30
+      - f_is_most_read_story
+      - f_iptc_overlap_top_20
+      - f_people_overlap_top_20
+      - f_orgs_overlap_top_20
+      - f_locations_overlap_top_20
+      - f_people_overlap_last_10
+      - f_orgs_overlap_last_10
+      - f_locations_overlap_last_10
+      - f_iptc_overlap_last_10
+      - f_min_entity_rank_top_20
+      - f_entity_overlap_any
+      - f_primary_city_in_locations_top_20
+      - f_primary_state_in_locations_top_20
+    # relevance_grade is set only on impressed rows; served-but-unseen rows
+    # have no label.
+    partition_filter: >-
+      {date_col} BETWEEN DATE '{start}' AND DATE '{end}'
+      AND resource_type = 'NFY_ARTICLE'
+      AND impressed
+      AND relevance_grade IS NOT NULL
+      AND pmod(xxhash64(xid), 10) = 0
+
+queries: queries.sql
+candidates: candidates.sql
+labels:
+  sql: labels.sql
+  label_window: 1h
+  aux_labels: [click]
+
+# Every group is stamped at request_ts. The table builds them as of the
+# request: enrichment and the user profile at request time, community counts
+# from the snapshot before it, item_prior_ctr and item_popularity_pct from the
+# previous day.
+feature_groups:
+  prod_signals:
+    sql: features/prod_signals.sql
+    keys: [query_id, item_id]
+    available_at: feature_ts
+  article:
+    sql: features/article.sql
+    keys: [query_id, item_id]
+    available_at: article_ts
+  user:
+    sql: features/user.sql
+    keys: [query_id]
+    available_at: feature_ts
+  user_item:
+    sql: features/user_item.sql
+    keys: [query_id, item_id]
+    available_at: feature_ts
+  context:
+    sql: features/context.sql
+    keys: [query_id]
+    available_at: feature_ts
+
+# production is the served rank. Candidates must not read it or the score
+# behind it; it is the reference, not a feature.
+reference_scores:
+  production: neg_rank
+  recency: neg_item_age_hours
+
+filters:
+  include_query_if: "max(label) >= 1"
+
+forbidden_columns:
+  - rank
+  - total_score
+  - item_index*
+  - impressed
+  - clicked
+  - n_impressions
+  - impression_*
+  - exposure_status
+  - read_quality
+  - dwell_*
+  - relevance_grade
+  - label_matched
+  - label_lag_seconds
+
+candidate_bounds:
+  min: 2
+  max: 50
+
+split:
+  time_col: query_ts
+  gap_days: 0
+  gap_hours: 2
+  train: 2026-10-11T10:00..2026-10-15T08:00
+  search_val: 2026-10-15T10:00..2026-10-16T08:00
+  select_holdout: 2026-10-16T10:00..2026-10-17T08:00
+  final_holdout: 2026-10-17T10:00..2026-10-18T08:00
+
+sampling:
+  seed: 0
+  smoke:
+    train_queries: 1000
+    eval_queries: 500
+  rungs:
+    R1:
+      train_fraction: 0.10
+      eval_queries: 2000
+    R2:
+      train_fraction: 0.40
+      eval_queries: 5000
+    R3:
+      train_fraction: 1.00
+      eval_queries: all
+
+checks:
+  - name: prod_ndcg_reproduces
+    score: ref.production
+    metric: ndcg@10_graded
+    split: search_val
+    expected: checks/prod_ndcg.sql
+    tol: 0.005
+  - name: queries_per_day
+    min: 300
+  - name: candidates_per_query_mean
+    between: [3, 50]

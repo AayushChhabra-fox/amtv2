@@ -158,8 +158,17 @@ def restrict_to_split(rows: list[dict], spec: DatasetSpec, split_name: str) -> l
     return kept
 
 
-def _prepare_sources(executor, spec: DatasetSpec, start: date, end: date) -> None:
+def _prepare_sources(
+    executor, spec: DatasetSpec, start: date, end: date, *, keep: frozenset[str] = frozenset()
+) -> None:
+    """Point each ``amt_src_<name>`` view at its partition-pruned table.
+
+    Views named in ``keep`` already read a staged copy of the full span and are left alone.
+    """
+
     for view, select_sql in source_view_sql(spec, start, end):
+        if view in keep:
+            continue
         executor.replace_view(view, select_sql)
 
 
@@ -370,6 +379,15 @@ def build_spark(
     staged: list[str] = []
     span_start, span_end = _full_span(spec)
     _prepare_sources(executor, spec, span_start, span_end)
+    kept_sources: set[str] = set()
+    for name, source in spec.sources.items():
+        if not source.materialize:
+            continue
+        view = f"amt_src_{name}"
+        table = _stage(executor, catalog, schema, spec, f"src_{name}", f"SELECT * FROM {view}")
+        staged.append(table)
+        executor.replace_view(view, f"SELECT * FROM {table}")
+        kept_sources.add(view)
     fragments = fragment_selects(
         spec, render_params(spec, span_start, span_end, _full_window(spec))
     )
@@ -468,7 +486,7 @@ def build_spark(
         if not check.expected or not check.split:
             continue
         start, end = ranges[check.split]
-        _prepare_sources(executor, spec, start, end)
+        _prepare_sources(executor, spec, start, end, keep=frozenset(kept_sources))
         params = render_params(spec, start, end, windows[check.split])
         rows = executor.execute(render(spec.sql_text(check.expected), params))
         if not rows or "metric" not in rows[0]:

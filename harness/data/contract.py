@@ -67,7 +67,12 @@ class DatasetBuildError(ValueError):
 
 
 class SourceSpec(BaseModel):
-    """One warehouse table. Large tables declare a partition filter."""
+    """One warehouse table. Large tables declare a partition filter.
+
+    ``columns`` projects the source. ``materialize`` copies the filtered,
+    projected source into a staging table once, so fragments that share it
+    do not each rescan the warehouse table.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -75,6 +80,19 @@ class SourceSpec(BaseModel):
     partition_filter: str | None = None
     date_col: str | None = None
     unpartitioned: bool = False
+    columns: list[str] | None = None
+    materialize: bool = False
+
+    @field_validator("columns")
+    @classmethod
+    def _columns(cls, names: list[str] | None) -> list[str] | None:
+        if names is not None:
+            if not names:
+                raise ValueError("columns must not be empty")
+            for name in names:
+                if not _IDENT.match(name):
+                    raise ValueError(f"source column {name!r} is not an identifier")
+        return names
 
     @model_validator(mode="after")
     def _filter_or_explicit(self) -> SourceSpec:

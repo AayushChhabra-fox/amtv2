@@ -1,0 +1,139 @@
+# NFY article rerank v2: impression-level, one week, no request tables.
+# A query is one For You session (xid, session_id). Its candidates are the
+# articles the session was shown on For You in its first 30 minutes, capped at
+# the first 50 shown. Positives are graded from news_interactions in the same
+# session; negatives are impressions with no click and no read.
+# Only 1 in 4 users is kept, by a hash of xid, so a user's sessions and history
+# stay together.
+# news_impressions (12 TB, unclustered) and news_interactions (26 TB) are each
+# scanned once: materialize copies the filtered, projected rows into a staging
+# table that every fragment reads.
+# The window sits inside nfy_article_rerank's train range, so it never touches
+# that spec's search or holdout dates. Splits run 10:00-08:00 UTC; the two-hour
+# gaps at the overnight low equal the label window, so labels of one split end
+# before the next split starts.
+name: nfy_article_rerank_v2
+task_type: ranking
+entity_type: article
+primary_metric: ndcg@10_graded
+
+output:
+  catalog: product_api_dev
+  schema: amt
+
+sources:
+  impressions:
+    table: pnr_prod.silver.news_impressions
+    date_col: make_date(year, month, day)
+    materialize: true
+    # event_created is when the card was shown; timestamp is when the event
+    # arrived (a median 58s later) and is used only to let Delta skip files.
+    columns: [xid, session_id, entity_id, event_created, impression_clicked, item_index, device_type, os_name]
+    partition_filter: >-
+      timestamp >= TIMESTAMP '{start} 00:00:00'
+      AND timestamp < TIMESTAMP '{end} 00:00:00' + INTERVAL 1 DAY
+      AND {date_col} BETWEEN DATE '{start}' AND DATE '{end}'
+      AND page_type = 'for-you'
+      AND entity_type = 'article'
+      AND latest_impression_rn = 1
+  interactions:
+    table: pnr_prod.silver.news_interactions
+    date_col: event_date
+    materialize: true
+    columns: [xid, session_id, entity_id, event_created, read_quality, category_slug]
+    partition_filter: >-
+      {date_col} BETWEEN DATE '{start}' AND DATE '{end}'
+      AND read_quality IN ('bounce', 'engaged_read', 'deep_read')
+  article_features:
+    table: product_api_prod.news_for_you.news_candidates_feature
+    unpartitioned: true
+    columns: [entity_id, publish_date, category_slug, primary_topic, tone, geo_scope, evergreen, sentiment, word_count]
+
+queries: queries.sql
+candidates: candidates.sql
+labels:
+  sql: labels.sql
+  label_window: 2h
+  aux_labels: [click]
+
+feature_groups:
+  article:
+    sql: features/article.sql
+    keys: [query_id, item_id]
+    available_at: published_ts
+  item_activity:
+    sql: features/item_activity.sql
+    keys: [query_id, item_id]
+    available_at: activity_window_end
+    lookback_days: 1
+  user:
+    sql: features/user.sql
+    keys: [query_id]
+    available_at: user_window_end
+    lookback_days: 1
+  user_item:
+    sql: features/user_item.sql
+    keys: [query_id, item_id]
+    available_at: user_item_window_end
+    lookback_days: 1
+  context:
+    sql: features/context.sql
+    keys: [query_id]
+    available_at: query_ts
+
+# production is the order For You showed the session (first shown, then slot).
+# Candidates must not read it; it is the reference, not a feature.
+reference_scores:
+  production: neg_shown_order
+  recency: neg_item_age_hours
+
+filters:
+  include_query_if: "max(label) >= 1"
+
+forbidden_columns:
+  - item_index
+  - display_position
+  - shown_order
+  - served_slot
+
+candidate_bounds:
+  min: 2
+  max: 50
+
+split:
+  time_col: query_ts
+  gap_days: 0
+  gap_hours: 2
+  train: 2026-10-02T10:00..2026-10-06T08:00
+  search_val: 2026-10-06T10:00..2026-10-07T08:00
+  select_holdout: 2026-10-07T10:00..2026-10-08T08:00
+  final_holdout: 2026-10-08T10:00..2026-10-09T08:00
+
+sampling:
+  seed: 0
+  smoke:
+    train_queries: 1000
+    eval_queries: 500
+  rungs:
+    R1:
+      train_fraction: 0.10
+      eval_queries: 2000
+    R2:
+      train_fraction: 0.40
+      eval_queries: 5000
+    R3:
+      train_fraction: 1.00
+      eval_queries: all
+
+checks:
+  - name: prod_ndcg_reproduces
+    score: ref.production
+    metric: ndcg@10_click
+    split: search_val
+    expected: checks/prod_ndcg.sql
+    tol: 0.005
+  # Calendar days that a split only touches for a few hours have fewer queries.
+  - name: queries_per_day
+    min: 300
+  - name: candidates_per_query_mean
+    between: [5, 50]
