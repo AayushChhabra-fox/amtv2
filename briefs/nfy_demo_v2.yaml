@@ -30,8 +30,8 @@ task:
     - item_index and display position
     - impression, click, read, and dwell fields
     - anything timestamped after request_ts
-# A placeholder: gate G1 sets it from the round-0 noise floor.
-min_effect: 0.015
+# Round 0 on whole-day splits: R3 half-width 0.009789, so at least 0.019578.
+min_effect: 0.02
 efficiency:
   train_dbu_per_candidate: 5
   serving:
