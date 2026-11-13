@@ -42,9 +42,10 @@ budget:
 mode: both
 design_space:
   families:
-    - "xgboost: XGBoost learning-to-rank (rank:ndcg or rank:pairwise, grouped by request) over all serving-time features"
+    - "xgboost: XGBoost learning-to-rank with rank:ndcg (or rank:pairwise), qid = request_id and relevance grade as the label, over all serving-time features"
     - "deep_nn: PyTorch deep ranker (MLP or deep-and-cross) over user, article, overlap, and production-signal features, trained with a per-request listwise or pairwise loss, CPU only"
     - "random_forest: scikit-learn random forest on relevance grade, scores sorted within each request"
+    - "catboost: CatBoostRanker with YetiRank (or YetiRankPairwise), group_id = request_id and relevance grade as the label, with article category, retrieval bucket, and other low-cardinality columns passed as native categorical features, CPU only"
   data: existing sources only
 off_limits:
   - eval and holdout splits
