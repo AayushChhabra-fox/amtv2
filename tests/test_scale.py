@@ -440,6 +440,64 @@ def test_small_run_pass_rule_requires_three_families(tmp_path: Path) -> None:
     assert receipt.family_count == 3
 
 
+class _KilledThenOk:
+    def __init__(self, states: list[str]) -> None:
+        self.states = states
+
+    def wait(self, job_run_id: str) -> dict:
+        life = self.states.pop(0)
+        result = "SUCCESS" if life == "TERMINATED" else "FAILED"
+        return {"life_cycle_state": life, "result_state": result, "state_message": "driver killed"}
+
+
+def _submitted(state: RunState, job_run_id: str) -> None:
+    state.submitted_jobs["c07/R3/0"] = {
+        **state.submitted_jobs.get("c07/R3/0", {}),
+        "job_run_id": job_run_id,
+        "submitted_at": 0.0,
+        "dbu_est": 0.5,
+    }
+    state.nodes[0].status = "submitted"
+
+
+def test_platform_killed_job_is_retried_once_then_escalates(tmp_path: Path) -> None:
+    from amt.orchestrator import _search_wait
+
+    state = _state(
+        nodes=[
+            {"node_id": "c07", "family": "xgboost", "claim": "c", "rung": "R3", "search_round": 1}
+        ]
+    )
+    _submitted(state, "run-1")
+    state = _search_wait(state, tmp_path, _KilledThenOk(["INTERNAL_ERROR"]))
+    assert state.stage == "SUBMIT"
+    assert state.nodes[0].status == "ready"
+    assert state.submitted_jobs["c07/R3/0"]["infra_retries"] == 1
+    assert "job_run_id" not in state.submitted_jobs["c07/R3/0"]
+    assert state.spent_dbu > 0
+
+    _submitted(state, "run-2")
+    state = _search_wait(state, tmp_path, _KilledThenOk(["INTERNAL_ERROR"]))
+    assert state.stage == "ESCALATE"
+    escalate = (tmp_path / "runs" / "s" / "ESCALATE.md").read_text(encoding="utf-8")
+    assert "infrastructure failure" in escalate
+    assert len(state.submitted_jobs["c07/R3/0"]["failed_attempts"]) == 2
+
+
+def test_a_failed_candidate_job_is_not_retried(tmp_path: Path) -> None:
+    from amt.orchestrator import _search_wait
+
+    state = _state(
+        nodes=[
+            {"node_id": "c07", "family": "xgboost", "claim": "c", "rung": "R3", "search_round": 1}
+        ]
+    )
+    _submitted(state, "run-1")
+    state = _search_wait(state, tmp_path, _KilledThenOk(["TERMINATED_FAILED"]))
+    assert state.nodes[0].status == "failed"
+    assert "infra_retries" not in state.submitted_jobs["c07/R3/0"]
+
+
 def test_proposal_cannot_reuse_another_runs_candidate_id(tmp_path: Path) -> None:
     (tmp_path / "candidates" / "a00").mkdir(parents=True)
     state = _state()

@@ -60,6 +60,7 @@ from harness.data.contract import load_spec
 # Caps from section 3.4. A schema failure is returned once; the next one escalates.
 MAX_DEBUG_ATTEMPTS = 3
 MAX_OUTER_RETRIES = 2
+MAX_INFRA_RETRIES = 1
 MAX_ROUNDS = 4
 
 
@@ -859,11 +860,13 @@ def _search_submit(state: RunState, brief: Brief, root: Path, backend: object) -
             model=model,
             device=node.device,
         )
+        retries = int(record.get("infra_retries") or 0)
+        token = f"{state.run_id}:{key}" + (f":retry{retries}" if retries else "")
         job_run_id = backend.submit(  # type: ignore[attr-defined]
             job="train",
             job_key=key,
             params=params,
-            idempotency_token=f"{state.run_id}:{key}",
+            idempotency_token=token,
         )
         record.update({"job_run_id": job_run_id, "submitted_at": time.time(), "dbu_est": estimate})
         state.submitted_jobs[key] = record
@@ -899,8 +902,40 @@ def _search_wait(state: RunState, root: Path, backend: object) -> RunState:
     record["result_state"] = result.get("result_state")
     record["finished_at"] = time.time()
     state.submitted_jobs[key] = record
+    if result.get("life_cycle_state") == "INTERNAL_ERROR":
+        return _retry_infra_failure(state, root, node, key, record, result)
     if result.get("result_state") != "SUCCESS":
         node.status = "failed"
+    return state
+
+
+def _retry_infra_failure(
+    state: RunState,
+    root: Path,
+    node: NodeWork,
+    key: str,
+    record: dict[str, Any],
+    result: dict[str, Any],
+) -> RunState:
+    """A job the platform killed (driver crash, lost cluster) says nothing about
+    the candidate. Charge the attempt, resubmit once, then escalate."""
+
+    message = str(result.get("state_message") or "internal error")
+    state.spent_dbu += _job_charge(record)
+    attempts = list(record.get("failed_attempts") or [])
+    attempts.append({"job_run_id": record.get("job_run_id"), "state_message": message})
+    retries = int(record.get("infra_retries") or 0)
+    if retries >= MAX_INFRA_RETRIES:
+        record.update({"pruned": True, "failed_attempts": attempts})
+        state.submitted_jobs[key] = record
+        return _escalate(
+            state,
+            root,
+            f"infrastructure failure: {key} was killed {retries + 1} times; last: {message}",
+        )
+    state.submitted_jobs[key] = {"infra_retries": retries + 1, "failed_attempts": attempts}
+    node.status = "ready"
+    state.stage = "SUBMIT"
     return state
 
 
