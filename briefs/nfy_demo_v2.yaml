@@ -44,7 +44,6 @@ design_space:
   families:
     - "xgboost: XGBoost learning-to-rank (rank:ndcg or rank:pairwise, grouped by request) over all serving-time features"
     - "deep_nn: PyTorch deep ranker (MLP or deep-and-cross) over user, article, overlap, and production-signal features, trained with a per-request listwise or pairwise loss, CPU only"
-    - "sas_rec: SASRec-style self-attention over the user's recent article sequence, scoring each candidate against the sequence, CPU only"
     - "random_forest: scikit-learn random forest on relevance grade, scores sorted within each request"
   data: existing sources only
 off_limits:

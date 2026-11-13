@@ -310,7 +310,14 @@ def test_fixed_cluster_payload_has_no_new_cluster() -> None:
     assert body["tasks"][0]["existing_cluster_id"] == "cluster-1"
     assert "new_cluster" not in body["tasks"][0]
     libraries = body["tasks"][0]["libraries"]
-    assert {lib["pypi"]["package"] for lib in libraries} == {"lightgbm", "mlflow"}
+    assert {lib["pypi"]["package"] for lib in libraries} == {
+        "lightgbm",
+        "mlflow",
+        "xgboost",
+        "torch",
+    }
+    torch = next(lib["pypi"] for lib in libraries if lib["pypi"]["package"] == "torch")
+    assert torch["repo"] == "https://download.pytorch.org/whl/cpu"
     assert all("whl" not in lib for lib in libraries)
     rendered = " ".join(body["tasks"][0]["spark_python_task"]["parameters"])
     assert "whl" not in rendered

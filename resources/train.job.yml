@@ -81,6 +81,11 @@ resources:
                 package: lightgbm
             - pypi:
                 package: mlflow
+            - pypi:
+                package: xgboost
+            - pypi:
+                package: torch
+                repo: https://download.pytorch.org/whl/cpu
           spark_python_task:
             python_file: ../harness/train.py
             parameters:
