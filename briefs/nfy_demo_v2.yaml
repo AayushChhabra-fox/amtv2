@@ -6,7 +6,7 @@ dataset_spec: datasets/nfy_article_rerank_gold
 k: 2
 max_rounds: 2
 problem:
-  surface: News For You article reranker, one week of NFY article requests
+  surface: News For You article reranker, NFY article requests from 2026-10-01 to 10-18
   user_outcome: Readers find articles they finish, not only articles they tap.
   metric:
     name: ndcg@10_graded

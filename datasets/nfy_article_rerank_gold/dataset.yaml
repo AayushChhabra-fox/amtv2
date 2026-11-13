@@ -1,4 +1,4 @@
-# NFY article rerank, gold: one week of NFY article requests from the reranker
+# NFY article rerank, gold: 2026-10-01 to 10-18 of NFY article requests from the reranker
 # training table, which already joins each served article to its impression,
 # read grade, and the serving-time features.
 # A query is one request. Its candidates are the articles the user was shown
@@ -6,9 +6,10 @@
 # table's relevance_grade: 3 deep read, 2 engaged read, 1 bounce or click
 # without a read, 0 shown only.
 # Only 1 in 10 users is kept, by a hash of xid.
-# The week sits inside nfy_article_rerank's train range, so it never touches
-# that spec's search or holdout dates. Splits run 10:00-08:00 UTC; the two-hour
-# gaps at the overnight low cover the label window.
+# The span sits inside nfy_article_rerank's train range, so it never touches
+# that spec's search or holdout dates. Splits are whole UTC days, because the
+# paired bootstrap resamples by query_ts date; search_val needs several days.
+# The two-hour gaps before midnight UTC cover the label window.
 name: nfy_article_rerank_gold
 task_type: ranking
 entity_type: article
@@ -187,10 +188,10 @@ split:
   time_col: query_ts
   gap_days: 0
   gap_hours: 2
-  train: 2026-10-11T10:00..2026-10-15T08:00
-  search_val: 2026-10-15T10:00..2026-10-16T08:00
-  select_holdout: 2026-10-16T10:00..2026-10-17T08:00
-  final_holdout: 2026-10-17T10:00..2026-10-18T08:00
+  train: 2026-10-01T00:00..2026-10-08T22:00
+  search_val: 2026-10-09T00:00..2026-10-13T22:00
+  select_holdout: 2026-10-14T00:00..2026-10-15T22:00
+  final_holdout: 2026-10-16T00:00..2026-10-19T00:00
 
 sampling:
   seed: 0
