@@ -1,0 +1,56 @@
+name: nikhil_neural_v1
+run_id: nikhil-neural-01
+approval_mode: none
+scale: search
+dataset_spec: datasets/nfy_article_rerank_gold
+k: 2
+max_rounds: 2
+problem:
+  surface: News For You article reranker, one week of NFY article requests
+  user_outcome: Readers find articles they finish, not only articles they tap.
+  metric:
+    name: ndcg@10_graded
+    gains: {impressed: 0, bounce_or_click: 1, engaged_read: 2, deep_read: 3}
+    why_it_tracks_outcome: >-
+      Graded NDCG@10 on relevance_grade rewards deep and engaged reads over
+      bounces among the articles the request put on screen.
+task:
+  query_unit: one NFY article request (request_id)
+  candidates: articles impressed for the request, the first 50 in production rank order
+  include_query_if: relevance_grade >= 1 on at least one candidate
+  serve_time_inputs:
+    - the production scorer's per-signal values (cosine, category, IPTC, entities, recency, velocity, breaking, continuity, local, visual clickability)
+    - article content, age, retrieval buckets, and community activity before the request
+    - the article's previous-day popularity and CTR
+    - the user's profile sizes, staleness, and cold-start flag at request time
+    - overlap between the article and the user's profile (categories, stories, people, organisations, locations)
+    - request hour, weekday, max_items, and retrieval size
+  forbidden:
+    - production rank and total_score (ref.production)
+    - item_index and display position
+    - impression, click, read, and dwell fields
+    - anything timestamped after request_ts
+# Round-0 noise on this dataset needs at least 0.0196 (2x the R3 half-width 0.0098).
+min_effect: 0.02
+efficiency:
+  train_dbu_per_candidate: 5
+  serving:
+    latency_p95_ms_per_100_candidates: 20
+budget:
+  total_dbu: 40
+  max_concurrent_jobs: 2
+mode: both
+design_space:
+  families:
+    - "mlp_ranker: PyTorch multilayer perceptron over user, article, overlap, and production-signal features, trained with a per-request listwise (softmax) or pairwise (RankNet) loss, CPU only"
+    - "dcn_v2: PyTorch deep-and-cross network (DCN-v2) that learns explicit feature crosses between user, article, and overlap features, trained with a per-request listwise or pairwise loss, CPU only"
+    - "deepfm: PyTorch DeepFM with embeddings for low-cardinality categorical columns (article category, retrieval bucket, weekday, hour) and a factorization-machine plus MLP head, trained with a per-request listwise or pairwise loss, CPU only"
+  out_of_scope_for_mvp:
+    - gradient-boosted trees, random forests, and linear-only models
+    - cross-encoders or LLM rerankers at serving time
+    - GPU training
+  data: existing sources only
+off_limits:
+  - eval and holdout splits
+  - metric code
+  - harness

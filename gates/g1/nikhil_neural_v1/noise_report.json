@@ -1,0 +1,180 @@
+{
+  "report": {
+    "baselines": [
+      {
+        "baseline_id": "recency",
+        "bootstrap_half_width": 0.037887,
+        "half_width": 0.037887,
+        "metric": 0.454179,
+        "paired_delta": -0.054458,
+        "rung": "R0",
+        "seed_half_width": 0.0
+      },
+      {
+        "baseline_id": "popularity",
+        "bootstrap_half_width": 0.034826,
+        "half_width": 0.034826,
+        "metric": 0.453187,
+        "paired_delta": -0.055449,
+        "rung": "R0",
+        "seed_half_width": 0.0
+      },
+      {
+        "baseline_id": "random",
+        "bootstrap_half_width": 0.046981,
+        "half_width": 0.046981,
+        "metric": 0.454916,
+        "paired_delta": -0.053721,
+        "rung": "R0",
+        "seed_half_width": 0.010726
+      },
+      {
+        "baseline_id": "lgbm_reference",
+        "bootstrap_half_width": 0.030402,
+        "half_width": 0.030402,
+        "metric": 0.50496,
+        "paired_delta": -0.003676,
+        "rung": "R0",
+        "seed_half_width": 0.0
+      },
+      {
+        "baseline_id": "recency",
+        "bootstrap_half_width": 0.024474,
+        "half_width": 0.024474,
+        "metric": 0.454848,
+        "paired_delta": -0.04361,
+        "rung": "R1",
+        "seed_half_width": 0.0
+      },
+      {
+        "baseline_id": "popularity",
+        "bootstrap_half_width": 0.023164,
+        "half_width": 0.023164,
+        "metric": 0.449334,
+        "paired_delta": -0.049125,
+        "rung": "R1",
+        "seed_half_width": 0.0
+      },
+      {
+        "baseline_id": "random",
+        "bootstrap_half_width": 0.021291,
+        "half_width": 0.021946,
+        "metric": 0.448929,
+        "paired_delta": -0.04953,
+        "rung": "R1",
+        "seed_half_width": 0.021946
+      },
+      {
+        "baseline_id": "lgbm_reference",
+        "bootstrap_half_width": 0.013542,
+        "half_width": 0.013542,
+        "metric": 0.518119,
+        "paired_delta": 0.019661,
+        "rung": "R1",
+        "seed_half_width": 0.0
+      },
+      {
+        "baseline_id": "recency",
+        "bootstrap_half_width": 0.013145,
+        "half_width": 0.013145,
+        "metric": 0.448535,
+        "paired_delta": -0.043578,
+        "rung": "R2",
+        "seed_half_width": 0.0
+      },
+      {
+        "baseline_id": "popularity",
+        "bootstrap_half_width": 0.010229,
+        "half_width": 0.010229,
+        "metric": 0.445684,
+        "paired_delta": -0.046429,
+        "rung": "R2",
+        "seed_half_width": 0.0
+      },
+      {
+        "baseline_id": "random",
+        "bootstrap_half_width": 0.013288,
+        "half_width": 0.013288,
+        "metric": 0.443191,
+        "paired_delta": -0.048922,
+        "rung": "R2",
+        "seed_half_width": 0.003642
+      },
+      {
+        "baseline_id": "lgbm_reference",
+        "bootstrap_half_width": 0.012528,
+        "half_width": 0.012528,
+        "metric": 0.522259,
+        "paired_delta": 0.030146,
+        "rung": "R2",
+        "seed_half_width": 0.002116
+      },
+      {
+        "baseline_id": "recency",
+        "bootstrap_half_width": 0.008397,
+        "half_width": 0.008397,
+        "metric": 0.442006,
+        "paired_delta": -0.042746,
+        "rung": "R3",
+        "seed_half_width": 0.0
+      },
+      {
+        "baseline_id": "popularity",
+        "bootstrap_half_width": 0.006561,
+        "half_width": 0.006561,
+        "metric": 0.441073,
+        "paired_delta": -0.043679,
+        "rung": "R3",
+        "seed_half_width": 0.0
+      },
+      {
+        "baseline_id": "random",
+        "bootstrap_half_width": 0.006002,
+        "half_width": 0.006002,
+        "metric": 0.432708,
+        "paired_delta": -0.052044,
+        "rung": "R3",
+        "seed_half_width": 0.002968
+      },
+      {
+        "baseline_id": "lgbm_reference",
+        "bootstrap_half_width": 0.009789,
+        "half_width": 0.009789,
+        "metric": 0.51831,
+        "paired_delta": 0.033558,
+        "rung": "R3",
+        "seed_half_width": 0.000271
+      }
+    ],
+    "brief_min_effect": 0.02,
+    "brief_name": "nikhil_neural_v1",
+    "budget_total_dbu": 40.0,
+    "dataset": "nfy_article_rerank_gold",
+    "evaluation": "ndcg@10_graded (impressed=0, bounce_or_click=1, engaged_read=2, deep_read=3)",
+    "expected_cells": 60,
+    "half_widths": {
+      "R0": 0.046981,
+      "R1": 0.024474,
+      "R2": 0.013288,
+      "R3": 0.009789
+    },
+    "lgbm_vs_production": {
+      "beats_production": true,
+      "lgbm_metric": 0.51831,
+      "paired_delta_point": 0.033558,
+      "production_metric": 0.484752,
+      "rung": "R3"
+    },
+    "min_effect_multiple": 2.0,
+    "missing": [],
+    "observed_cells": 60,
+    "primary_metric": "ndcg@10_graded",
+    "proposed_min_effect": 0.01,
+    "r3_half_width": 0.009789,
+    "remediation": [],
+    "required_min_effect": 0.019578,
+    "status": "pass",
+    "train_dbu_per_candidate": 5.0
+  },
+  "report_sha256": "ce05c8b574cc9a335699913b911ad422b8b149ebf7c70ed4565af73df9786898"
+}
