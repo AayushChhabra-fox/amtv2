@@ -80,6 +80,8 @@ resources:
             - pypi:
                 package: torch
                 repo: https://download.pytorch.org/whl/cpu
+            - pypi:
+                package: catboost
           spark_python_task:
             python_file: ../harness/train.py
             parameters:

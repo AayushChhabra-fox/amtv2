@@ -22,11 +22,19 @@ def _write(path: Path, text: str) -> Path:
     return path
 
 
+def test_catboost_is_a_base_import_and_cannot_be_repinned(tmp_path: Path) -> None:
+    candidate = tmp_path / "c"
+    _write(candidate / "model.py", "from catboost import CatBoostRanker\n")
+    assert static_check(candidate) == []
+    with pytest.raises(RequirementsError, match="base environment"):
+        parse_requirements(_write(candidate / "requirements.txt", "catboost==1.2.10\n"))
+
+
 def test_parse_accepts_exact_pins(tmp_path: Path) -> None:
-    path = _write(tmp_path / "requirements.txt", "# ranker\ncatboost==1.2.5\n\nimplicit==0.7.2\n")
+    path = _write(tmp_path / "requirements.txt", "# ranker\nlightfm==1.17\n\nimplicit==0.7.2\n")
     pins = parse_requirements(path)
     assert [(item.name, item.version) for item in pins] == [
-        ("catboost", "1.2.5"),
+        ("lightfm", "1.17"),
         ("implicit", "0.7.2"),
     ]
     assert len(requirements_hash(pins)) == 16
@@ -35,17 +43,17 @@ def test_parse_accepts_exact_pins(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "text",
     [
-        "catboost>=1.2",
+        "lightfm>=1.16",
         "git+https://github.com/example/ranker.git",
         "https://example.com/pkg.whl",
         "-e .",
         "-r other.txt",
-        "catboost==1.2 --index-url https://pypi.org/simple",
+        "lightfm==1.17 --index-url https://pypi.org/simple",
         "numpy==1.26.4",
         "scikit-learn==1.4.0",
         "requests==2.32.3",
         "databricks-sdk==0.40.0",
-        "catboost==1.2.5\ncatboost==1.2.6\n",
+        "lightfm==1.17\nlightfm==1.16\n",
         "\n".join(f"pkg{index}==1.0.0" for index in range(11)),
     ],
 )
@@ -64,11 +72,11 @@ def test_static_check_allows_a_declared_import(tmp_path: Path) -> None:
     directory = tmp_path / "candidates" / "c00"
     _write(
         directory / "model.py",
-        "import catboost\nimport numpy\n",
+        "import lightfm\nimport numpy\n",
     )
     denied = "\n".join(static_check(directory))
-    assert "catboost" in denied
-    allowed = static_check(directory, extra_imports=frozenset({"catboost"}))
+    assert "lightfm" in denied
+    allowed = static_check(directory, extra_imports=frozenset({"lightfm"}))
     assert allowed == []
 
 
@@ -78,7 +86,7 @@ def test_preflight_installs_declared_requirements_before_smoke(
     directory = tmp_path / "candidates" / "c00"
     directory.mkdir(parents=True)
     (directory / "model.py").write_text(MODEL_PY, encoding="utf-8")
-    (directory / "requirements.txt").write_text("catboost==1.2.5\n", encoding="utf-8")
+    (directory / "requirements.txt").write_text("lightfm==1.17\n", encoding="utf-8")
     calls: list[str] = []
 
     def fake_install(candidate_dir: Path, target_root: Path) -> Path:
@@ -114,12 +122,12 @@ def test_train_installs_before_import(tmp_path: Path, monkeypatch: pytest.Monkey
         "        return cls()\n",
         encoding="utf-8",
     )
-    (model.parent / "requirements.txt").write_text("catboost==1.2.5\n", encoding="utf-8")
+    (model.parent / "requirements.txt").write_text("lightfm==1.17\n", encoding="utf-8")
     seen: list[Path] = []
 
     def fake_activate(model_path: Path) -> tuple[str, float]:
         seen.append(model_path)
-        assert "catboost" not in sys.modules
+        assert "lightfm" not in sys.modules
         return "abc123abc123abcd", 0.25
 
     monkeypatch.setattr("harness.train.activate_candidate_requirements", fake_activate)

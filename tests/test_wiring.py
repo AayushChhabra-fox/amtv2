@@ -315,6 +315,7 @@ def test_fixed_cluster_payload_has_no_new_cluster() -> None:
         "mlflow",
         "xgboost",
         "torch",
+        "catboost",
     }
     torch = next(lib["pypi"] for lib in libraries if lib["pypi"]["package"] == "torch")
     assert torch["repo"] == "https://download.pytorch.org/whl/cpu"

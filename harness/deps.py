@@ -30,6 +30,7 @@ BASE_PACKAGES = frozenset(
         "polars",
         "lightgbm",
         "xgboost",
+        "catboost",
         "torch",
         "scikit-learn",
         "sentence-transformers",

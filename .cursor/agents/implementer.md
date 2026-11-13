@@ -18,7 +18,7 @@ Read `spec.md`, `harness/interface.py`, and, when the prompt includes them, the 
 Implement the Ranker protocol: `fit(train, valid, ctx)`, `score(frame)`, `save(path)`, `load(path)`.
 
 - `fit` and `score` may use only the frames passed in. `score` must not read labels.
-- The standard library and the base scientific stack (numpy, pandas, polars, lightgbm, xgboost, torch, sklearn, sentence-transformers) are already installed.
+- The standard library and the base scientific stack (numpy, pandas, polars, lightgbm, xgboost, catboost, torch, sklearn, sentence-transformers) are already installed.
 - Any other PyPI package goes in `candidates/<id>/requirements.txt` as exact `name==version` pins, at most 10 lines. Justify each pin in `spec.md`. Do not re-pin a base package, and do not use a URL, a git install, or an extra index.
 - The harness installs that file. Do not call pip, subprocess, or the network yourself.
 - Do not import or call Spark, dbutils, subprocess, sockets, or HTTP clients. A package that talks to the network at score time is not allowed.

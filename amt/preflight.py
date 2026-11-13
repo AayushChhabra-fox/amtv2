@@ -25,6 +25,7 @@ BASE_IMPORTS = frozenset(
         "polars",
         "lightgbm",
         "xgboost",
+        "catboost",
         "torch",
         "sklearn",
         "sentence_transformers",
