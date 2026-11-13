@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 
 from amt.ledger import read_rows
-from amt.schemas import Brief, LedgerRow
+from amt.schemas import Brief, LedgerRow, load_brief
 
 _NEWEST = 12
 
@@ -49,7 +49,7 @@ def build_context(
         "Write scope: candidates/<id>/ only.",
         "Do not edit harness/, amt/, briefs/, datasets/, databricks.yml, or resources/.",
         "",
-        _ledger_block(root),
+        _ledger_block(root, brief, run_id),
     ]
     if operator in {"draft", "improve"}:
         lines.extend(["", _sibling_block(root, run_id, node_id, operator)])
@@ -72,6 +72,9 @@ def build_context(
             ]
         )
     if role == "planner":
+        used = sorted(path.name for path in (root / "candidates").glob("*") if path.is_dir())
+        if used:
+            lines.extend(["", "Candidate ids already taken (do not reuse): " + ", ".join(used)])
         lines.extend(
             [
                 "",
@@ -90,10 +93,10 @@ def build_context(
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _ledger_block(root: Path) -> str:
-    rows = read_rows(root)
+def _ledger_block(root: Path, brief: Brief, run_id: str | None) -> str:
+    rows = _comparable_rows(root, brief, run_id)
     newest = rows[-_NEWEST:]
-    lines = ["Ledger (12 newest nodes, one line each):"]
+    lines = ["Ledger (12 newest nodes on this dataset, one line each):"]
     if not newest:
         lines.append("  (empty)")
     else:
@@ -105,6 +108,46 @@ def _ledger_block(root: Path) -> str:
     else:
         lines.extend(f"  {_one_line(row)}" for row in best)
     return "\n".join(lines)
+
+
+def _comparable_rows(root: Path, brief: Brief, run_id: str | None) -> list[LedgerRow]:
+    """This run's rows plus rows from other runs on the same dataset.
+
+    Deltas measured on another dataset's splits and baselines are not comparable.
+    """
+
+    dataset = _normalized(brief.resolved_dataset_spec())
+    datasets: dict[str, str | None] = {}
+    kept: list[LedgerRow] = []
+    for row in read_rows(root):
+        if row.run_id == run_id:
+            kept.append(row)
+            continue
+        if row.run_id not in datasets:
+            datasets[row.run_id] = _run_dataset(root, row.run_id)
+        if dataset is not None and datasets[row.run_id] == dataset:
+            kept.append(row)
+    return kept
+
+
+def _run_dataset(root: Path, run_id: str) -> str | None:
+    state = root / "runs" / run_id / "state.json"
+    if not state.is_file():
+        return None
+    brief_path = json.loads(state.read_text(encoding="utf-8")).get("brief_path")
+    if not brief_path:
+        return None
+    path = root / brief_path
+    if not path.is_file():
+        return None
+    try:
+        return _normalized(load_brief(path).resolved_dataset_spec())
+    except (ValueError, OSError):
+        return None
+
+
+def _normalized(spec: str | None) -> str | None:
+    return spec.rstrip("/") if spec else None
 
 
 def _one_line(row: LedgerRow) -> str:

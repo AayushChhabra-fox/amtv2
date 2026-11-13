@@ -440,6 +440,17 @@ def test_small_run_pass_rule_requires_three_families(tmp_path: Path) -> None:
     assert receipt.family_count == 3
 
 
+def test_proposal_cannot_reuse_another_runs_candidate_id(tmp_path: Path) -> None:
+    (tmp_path / "candidates" / "a00").mkdir(parents=True)
+    state = _state()
+    batch = ProposalBatch.model_validate(
+        {"candidates": [_candidate("a00", "draft"), _candidate("a01", "draft")]}
+    )
+    problems = _proposal_problems(state, batch, tmp_path)
+    assert any("a00 is already used" in problem for problem in problems)
+    assert not any("a01 is already used" in problem for problem in problems)
+
+
 def test_k4_plan_asks_for_eight_drafts_and_three_improvements() -> None:
     state = _state()
     note = _plan_note(state, "")

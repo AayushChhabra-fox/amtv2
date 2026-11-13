@@ -605,7 +605,7 @@ def _search_plan(state: RunState, brief: Brief, root: Path) -> RunState:
     batch = parsed.value
     if not isinstance(batch, ProposalBatch):
         return _schema_retry(state, root, "planner output did not parse")
-    problems = _proposal_problems(state, batch)
+    problems = _proposal_problems(state, batch, root)
     if problems:
         return _schema_retry(state, root, "\n".join(problems))
     _write_proposals(output_path, batch)
@@ -1176,11 +1176,17 @@ def _escalate(state: RunState, root: Path, reason: str) -> RunState:
     return state
 
 
-def _proposal_problems(state: RunState, batch: ProposalBatch) -> list[str]:
+def _proposal_problems(
+    state: RunState, batch: ProposalBatch, root: Path | None = None
+) -> list[str]:
     allowed = set(_allowed_parent_list(state))
+    own = {node.node_id for node in state.nodes}
+    taken = set() if root is None else _used_candidate_ids(root) - own
     problems: list[str] = []
     seen: set[tuple[str, str, str]] = set()
     for candidate in batch.candidates:
+        if candidate.id in taken:
+            problems.append(f"{candidate.id} is already used by another run; pick an unused id")
         if candidate.operator != state.round_operator:
             problems.append(
                 f"{candidate.id} operator is {candidate.operator}; "
@@ -1203,6 +1209,13 @@ def _proposal_problems(state: RunState, batch: ProposalBatch) -> list[str]:
             if count < 3:
                 problems.append(f"propose 3 improvements of {parent}; found {count}")
     return problems
+
+
+def _used_candidate_ids(root: Path) -> set[str]:
+    directory = root / "candidates"
+    if not directory.is_dir():
+        return set()
+    return {path.name for path in directory.iterdir() if path.is_dir()}
 
 
 def _duplicate(candidate: Any, accepted: list[Any], root: Path) -> bool:

@@ -6,10 +6,10 @@ from amt.ledger import append
 from amt.schemas import Brief, LedgerRow
 
 
-def _row(index: int) -> LedgerRow:
+def _row(index: int, run_id: str = "r") -> LedgerRow:
     family = "linear" if index % 2 == 0 else "tree"
     return LedgerRow(
-        run_id="r",
+        run_id=run_id,
         node_id=f"n{index}",
         operator="draft",
         family=family,
@@ -82,3 +82,27 @@ def test_context_keeps_newest_nodes_siblings_and_the_fix_chain(tmp_path: Path) -
     assert "beta " in draft
     assert "second draft" in draft
     assert "simple" in draft
+
+
+def test_ledger_shows_only_runs_on_the_same_dataset(tmp_path: Path) -> None:
+    for run_id, spec in [("old", "datasets/demo"), ("peer", "datasets/gold/")]:
+        brief_path = tmp_path / "briefs" / f"{run_id}.yaml"
+        brief_path.parent.mkdir(parents=True, exist_ok=True)
+        brief_path.write_text(
+            f"name: {run_id}\ndataset_spec: {spec}\nbudget: {{total_dbu: 10}}\n",
+            encoding="utf-8",
+        )
+        state = tmp_path / "runs" / run_id / "state.json"
+        state.parent.mkdir(parents=True)
+        state.write_text(json.dumps({"brief_path": f"briefs/{run_id}.yaml"}), encoding="utf-8")
+    append(tmp_path, _row(1, "old"))
+    append(tmp_path, _row(2, "peer"))
+    append(tmp_path, _row(3, "now"))
+    brief = Brief.model_validate(
+        {"name": "now", "dataset_spec": "datasets/gold", "budget": {"total_dbu": 10}, "k": 2}
+    )
+
+    text = build_context("planner", brief, tmp_path, run_id="now")
+    assert "n1 " not in text
+    assert "n2 " in text
+    assert "n3 " in text
