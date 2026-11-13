@@ -16,6 +16,15 @@ amt = "amt.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8.0", "ruff>=0.6"]
+models = [
+    "catboost>=1.2.10",
+    "torch>=2.15.0",
+    "xgboost>=3.2.0",
+]
+
+[tool.uv]
+# Preflight imports each candidate locally, so the families' libraries must be here too.
+default-groups = ["dev", "models"]
 
 [build-system]
 requires = ["hatchling"]
