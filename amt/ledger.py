@@ -55,6 +55,32 @@ def read_rows(root: Path) -> list[LedgerRow]:
     return rows
 
 
+def annotations_path(root: Path) -> Path:
+    return root / "ledger" / "annotations.jsonl"
+
+
+def annotate(root: Path, job_run_id: str, note: str) -> None:
+    """Attach a note to the rows of one job without touching results.jsonl."""
+    _assert_control_writer()
+    path = annotations_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"job_run_id": job_run_id, "note": note}) + "\n")
+
+
+def read_annotations(root: Path) -> dict[str, str]:
+    """Latest note per job run id."""
+    path = annotations_path(root)
+    if not path.is_file():
+        return {}
+    notes: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            item = json.loads(line)
+            notes[str(item["job_run_id"])] = str(item["note"])
+    return notes
+
+
 def _assert_control_writer() -> None:
     frames = inspect.stack()
     if len(frames) < 3:

@@ -13,3 +13,4 @@ ledger/results.jsonl
 candidates/**
 !candidates/.gitkeep
 .cursor/hooks/state/
+ledger/annotations.jsonl

@@ -98,6 +98,21 @@ def test_planner_and_critic_are_told_to_reply_not_write(tmp_path: Path) -> None:
     assert "write candidates/c1/model.py" in implementer
 
 
+def test_annotated_crash_is_not_shown_as_a_failed_node(tmp_path: Path) -> None:
+    from amt.ledger import annotate
+
+    crashed = _row(1).model_copy(
+        update={"status": "failed", "kill_reason": "preflight FAIL", "job_run_id": "j1"}
+    )
+    append(tmp_path, crashed)
+    annotate(tmp_path, "j1", "driver ran out of memory; the model was never scored")
+    brief = Brief.model_validate({"name": "nfy", "budget": {"total_dbu": 10}, "k": 2})
+    text = build_context("critic", brief, tmp_path, run_id="r")
+    line = next(item for item in text.splitlines() if item.strip().startswith("n1 "))
+    assert "failed" not in line
+    assert "not_measured (driver ran out of memory" in line
+
+
 def test_ledger_shows_only_runs_on_the_same_dataset(tmp_path: Path) -> None:
     for run_id, spec in [("old", "datasets/demo"), ("peer", "datasets/gold/")]:
         brief_path = tmp_path / "briefs" / f"{run_id}.yaml"

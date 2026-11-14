@@ -6,6 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
+from amt import ledger
 from amt.batch import (
     collect_ladder,
     collect_noise,
@@ -135,6 +136,13 @@ def main(argv: list[str] | None = None) -> int:
     doctor_parser = sub.add_parser("doctor", help="check auth, workspace, and the agent CLI")
     doctor_parser.add_argument("--root", type=Path, default=None)
 
+    annotate_parser = sub.add_parser(
+        "annotate", help="note why a job's ledger rows are not a model result"
+    )
+    annotate_parser.add_argument("--job-run-id", required=True)
+    annotate_parser.add_argument("--note", required=True)
+    annotate_parser.add_argument("--root", type=Path, default=None)
+
     args = parser.parse_args(argv)
     root = args.root if getattr(args, "root", None) else Path.cwd()
     if args.command == "deploy":
@@ -170,6 +178,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "doctor":
         print(doctor_report(root))
+        return 0
+    if args.command == "annotate":
+        ledger.annotate(root, args.job_run_id, args.note)
+        print(f"annotated job {args.job_run_id}")
         return 0
     if args.command == "noise":
         return _noise(root, args)

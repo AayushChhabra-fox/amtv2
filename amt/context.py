@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from amt.ledger import read_rows
+from amt.ledger import read_annotations, read_rows
 from amt.schemas import Brief, LedgerRow, load_brief
 
 _NEWEST = 12
@@ -103,18 +103,19 @@ def build_context(
 
 def _ledger_block(root: Path, brief: Brief, run_id: str | None) -> str:
     rows = _comparable_rows(root, brief, run_id)
+    notes = read_annotations(root)
     newest = rows[-_NEWEST:]
     lines = ["Ledger (12 newest nodes on this dataset, one line each):"]
     if not newest:
         lines.append("  (empty)")
     else:
-        lines.extend(f"  {_one_line(row)}" for row in newest)
+        lines.extend(f"  {_one_line(row, notes)}" for row in newest)
     lines.append("Best node per family:")
     best = _best_by_family(rows)
     if not best:
         lines.append("  (none)")
     else:
-        lines.extend(f"  {_one_line(row)}" for row in best)
+        lines.extend(f"  {_one_line(row, notes)}" for row in best)
     return "\n".join(lines)
 
 
@@ -158,16 +159,20 @@ def _normalized(spec: str | None) -> str | None:
     return spec.rstrip("/") if spec else None
 
 
-def _one_line(row: LedgerRow) -> str:
+def _one_line(row: LedgerRow, notes: dict[str, str] | None = None) -> str:
     delta = "-"
     if row.delta_vs_baseline is not None:
         delta = f"{row.delta_vs_baseline.point:.4f}"
     elif row.metric is not None:
         delta = f"metric={row.metric:.4f}"
     parent = row.parent_id or "-"
+    status = row.status
+    note = (notes or {}).get(row.job_run_id or "")
+    if note:
+        status = f"not_measured ({note})"
     return (
         f"{row.node_id} {row.operator} {row.family} {row.rung} "
-        f"{row.status} delta={delta} parent={parent} {row.claim}"
+        f"{status} delta={delta} parent={parent} {row.claim}"
     )
 
 
