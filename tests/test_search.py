@@ -384,6 +384,9 @@ def test_planner_call_logs_cited_references(tmp_path: Path, monkeypatch) -> None
     )
     assert record["references_count"] == 1
     assert record["role"] == "planner"
+    assert record["reply_path"] == "runs/cite/agent_replies/001_planner.json"
+    reply = json.loads((tmp_path / record["reply_path"]).read_text(encoding="utf-8"))
+    assert reply["candidates"][0]["id"] == "c00"
 
 
 def test_token_cap_and_call_log(tmp_path: Path, monkeypatch) -> None:

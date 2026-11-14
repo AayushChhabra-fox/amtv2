@@ -223,6 +223,7 @@ def run_role(
                 },
             )
             started = time.perf_counter()
+    reply_path: str | None = None
     try:
         if mode == "cursor" and role == "planner" and not cursor_agent_web_tools_available():
             raise RuntimeError(
@@ -237,6 +238,8 @@ def run_role(
             output = _run_fake(role, root, run_id, node_id=node_id)
         else:
             output = _run_stub(role, brief, root, run_id)
+        if role in {"planner", "critic"}:
+            reply_path = _save_reply(root, run_id, role, output)
         tokens = _token_count(output)
         if cap is not None and tokens is not None and tokens > cap:
             raise RuntimeError(f"token cap {cap} exceeded ({tokens})")
@@ -251,6 +254,7 @@ def run_role(
                 "latency_s": round(time.perf_counter() - started, 4),
                 "tokens": None,
                 "references_count": _references_count(role, None),
+                "reply_path": reply_path,
                 "error": str(exc),
             },
         )
@@ -265,9 +269,21 @@ def run_role(
             "latency_s": round(time.perf_counter() - started, 4),
             "tokens": tokens,
             "references_count": _references_count(role, output),
+            "reply_path": reply_path,
         },
     )
     return output
+
+
+def _save_reply(root: Path, run_id: str, role: str, output: object) -> str:
+    """Keep the raw reply, so one the orchestrator cannot parse can still be read."""
+
+    directory = root / "runs" / run_id / "agent_replies"
+    directory.mkdir(parents=True, exist_ok=True)
+    number = sum(1 for _ in directory.glob("*.json")) + 1
+    path = directory / f"{number:03d}_{role}.json"
+    path.write_text(json.dumps(output, indent=2, default=str) + "\n", encoding="utf-8")
+    return str(path.relative_to(root))
 
 
 def coerce_role_output(output: object) -> object:
