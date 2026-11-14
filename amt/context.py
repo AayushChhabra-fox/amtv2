@@ -14,6 +14,10 @@ from amt.ledger import read_rows
 from amt.schemas import Brief, LedgerRow, load_brief
 
 _NEWEST = 12
+_REPLY_ONLY = (
+    "You run read-only: do not write or edit any file. Your reply is the output, "
+    "and it must contain only the JSON object. "
+)
 
 
 def build_context(
@@ -46,7 +50,9 @@ def build_context(
         f"  serve_time_inputs: {', '.join(brief.task.serve_time_inputs) or '(unset)'}",
         f"  forbidden: {', '.join(brief.task.forbidden) or '(none)'}",
         "",
-        "Write scope: candidates/<id>/ only.",
+        "Write scope: none; reply only."
+        if role in {"planner", "critic"}
+        else "Write scope: candidates/<id>/ only.",
         "Do not edit harness/, amt/, briefs/, datasets/, databricks.yml, or resources/.",
         "",
         _ledger_block(root, brief, run_id),
@@ -86,7 +92,9 @@ def build_context(
     lines.extend(["", "Files:"])
     for path in inputs or _default_inputs(role, root, brief, node_id):
         lines.append(f"  read {path}")
-    if output_path:
+    if output_path and role in {"planner", "critic"}:
+        lines.append(f"  (the orchestrator saves your reply to {output_path})")
+    elif output_path:
         lines.append(f"  write {output_path}")
     lines.append("")
     lines.append(_output_contract(role))
@@ -250,7 +258,7 @@ def _default_inputs(role: str, root: Path, brief: Brief, node_id: str | None) ->
 def _output_contract(role: str) -> str:
     if role == "planner":
         return (
-            "Return one JSON object with a candidates list. Each candidate needs "
+            _REPLY_ONLY + "Return one JSON object with a candidates list. Each candidate needs "
             "id, operator, family, claim, fit_argument, cheap_test, kill_if, and est_cost. "
             "improve also needs parent_id and change. draft must not set parent_id. "
             "Web search is available. When an idea came from a page you opened, "
@@ -258,7 +266,7 @@ def _output_contract(role: str) -> str:
         )
     if role == "critic":
         return (
-            "Return one JSON object with a verdicts list. Each verdict needs "
+            _REPLY_ONLY + "Return one JSON object with a verdicts list. Each verdict needs "
             "candidate_id, decision (PASS, REVISE, or DROP), and reason."
         )
     if role == "reviewer":

@@ -84,6 +84,20 @@ def test_context_keeps_newest_nodes_siblings_and_the_fix_chain(tmp_path: Path) -
     assert "simple" in draft
 
 
+def test_planner_and_critic_are_told_to_reply_not_write(tmp_path: Path) -> None:
+    brief = Brief.model_validate({"name": "nfy", "budget": {"total_dbu": 10}, "k": 2})
+    for role in ("planner", "critic"):
+        text = build_context(role, brief, tmp_path, run_id="r", output_path="runs/r/out.yaml")
+        assert "write runs/r/out.yaml" not in text
+        assert "orchestrator saves your reply to runs/r/out.yaml" in text
+        assert "do not write or edit any file" in text
+        assert "candidates/<id>/ only" not in text
+    implementer = build_context(
+        "implementer", brief, tmp_path, run_id="r", output_path="candidates/c1/model.py"
+    )
+    assert "write candidates/c1/model.py" in implementer
+
+
 def test_ledger_shows_only_runs_on_the_same_dataset(tmp_path: Path) -> None:
     for run_id, spec in [("old", "datasets/demo"), ("peer", "datasets/gold/")]:
         brief_path = tmp_path / "briefs" / f"{run_id}.yaml"
