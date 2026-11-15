@@ -66,6 +66,14 @@ def test_inflight_reservations_and_ledger_commitments() -> None:
     assert node_committed_dbu([row], "r", "c2") == 0
 
 
+def test_each_inflight_r3_job_stays_reserved() -> None:
+    jobs = {
+        "c1/R3/0": {"dbu_est": 2, "pruned": False, "job_run_id": "a"},
+        "c2/R3/0": {"dbu_est": 3, "pruned": False, "job_run_id": "b"},
+    }
+    assert inflight_dbu(jobs) == pytest.approx(5)
+
+
 def test_later_rungs_are_priced_from_the_measured_job() -> None:
     from pathlib import Path
 

@@ -7,7 +7,7 @@ import os
 import subprocess
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
@@ -39,13 +39,8 @@ from amt.ledger import read_rows
 from amt.paths import candidate_dir
 from amt.preflight import preflight_candidate
 from amt.pruner import RunView, commit_rung, decide
-from amt.scale import (
-    finish_run_report,
-    scale_block_reason,
-    stats_summary,
-    write_agent_stats,
-    write_calibration_claim,
-)
+from amt.reporting import log_progress, write_report, write_report_json, write_round_digest
+from amt.scale import scale_block_reason, write_calibration_claim
 from amt.schemas import (
     AgentRevision,
     Brief,
@@ -60,10 +55,20 @@ from amt.schemas import (
 )
 from amt.search_policy import (
     C00_ID,
+    allowed_parents,
+    combine_parents,
+    duplicate_candidate,
+    fork_on_plateau,
+    operator_for_round,
     random_metric_at,
     record_c00_promotion,
     rungs_for,
     seed_c00,
+    shortlist,
+    unscored_final_r3,
+)
+from amt.search_policy import (
+    proposal_problems as _proposal_problems,
 )
 from amt.snapshot import SnapshotError, upload_candidate
 from harness.data.contract import load_spec
@@ -72,7 +77,6 @@ from harness.data.contract import load_spec
 MAX_DEBUG_ATTEMPTS = 3
 MAX_OUTER_RETRIES = 2
 MAX_INFRA_RETRIES = 1
-MAX_ROUNDS = 4
 
 
 def run_brief(
@@ -158,6 +162,7 @@ def run_brief(
             _consume_approval(root, state.run_id)
             _save(state_path, state)
         finished = state.stage
+        log_progress(state)
         state = _search_step(state, brief, root, backend)
         _save(state_path, state)
         if os.environ.get("AMT_STOP_AFTER") == finished:
@@ -165,6 +170,24 @@ def run_brief(
         if state.awaiting_approval:
             return state
     return state
+
+
+def resume_brief(run_id: str, *, root: Path | None = None) -> RunState:
+    """Continue a saved run. An escalated run restarts at the stage that stopped it."""
+
+    root = root or Path.cwd()
+    state_path = root / "runs" / run_id / "state.json"
+    if not state_path.is_file():
+        raise FileNotFoundError(f"no state for run {run_id}")
+    state = _load_state(state_path)
+    if state.stage == "ESCALATE":
+        state.stage = state.escalated_from_stage or "PLAN"
+        state.stop_requested = False
+        _save(state_path, state)
+    brief_path = Path(state.brief_path)
+    if not brief_path.is_absolute():
+        brief_path = root / brief_path
+    return run_brief(brief_path, root=root, run_id=run_id)
 
 
 def request_confirmation(
@@ -325,9 +348,11 @@ def _write_escalate(root: Path, state: RunState, reason: str) -> None:
 
 
 def _stop(state_path: Path, state: RunState, root: Path, reason: str) -> RunState:
+    _remember_escalation(state)
     state.stage = "ESCALATE"
     _save(state_path, state)
     _write_escalate(root, state, reason)
+    write_report_json(root, state)
     return state
 
 
@@ -343,28 +368,6 @@ def _apply_scale(brief: Brief, state: RunState) -> None:
     elif state.scale == "small":
         brief.k = state.k
         brief.approval_mode = state.approval_mode
-
-
-def operator_for_round(round_number: int, *, plateau: bool, lineage_count: int) -> str:
-    """Operator for a round. Round 4 combines two lineages; a plateau forks to a new draft."""
-
-    if round_number <= 1:
-        return "draft"
-    if round_number > MAX_ROUNDS:
-        return "confirm"
-    if round_number == MAX_ROUNDS:
-        return "combine" if lineage_count >= 2 else "confirm"
-    if plateau:
-        return "draft"
-    return "improve"
-
-
-def fork_on_plateau(gains: list[float], min_effect: float) -> bool:
-    """True when the last two improvements each sit below the noise floor."""
-
-    if len(gains) < 2:
-        return False
-    return gains[-1] < min_effect and gains[-2] < min_effect
 
 
 def _search_step(state: RunState, brief: Brief, root: Path, backend: object) -> RunState:
@@ -390,14 +393,14 @@ def _search_step(state: RunState, brief: Brief, root: Path, backend: object) -> 
     if stage == "CONFIRM":
         return _search_confirm(state, brief, root, backend)
     if stage == "REPORT":
-        _write_report(root, state, brief)
+        write_report(root, state, brief)
         return state
     raise RuntimeError(f"unknown stage {stage}")
 
 
 def _search_plan(state: RunState, brief: Brief, root: Path) -> RunState:
     feedback = _feedback_text(root, state)
-    parents = _allowed_parent_list(state)
+    parents = allowed_parents(state)
     output_path = _proposals_path(root, state)
     output = run_role(
         "planner",
@@ -436,7 +439,7 @@ def _search_critique(state: RunState, brief: Brief, root: Path) -> RunState:
         root,
         state.run_id,
         operator=state.round_operator,
-        parent_ids=_allowed_parent_list(state),
+        parent_ids=allowed_parents(state),
         output_path=output_path,
         inputs=[str(_proposals_path(root, state))],
     )
@@ -452,30 +455,26 @@ def _search_critique(state: RunState, brief: Brief, root: Path) -> RunState:
         return _schema_retry(state, root, "critic output did not parse")
     output_path.write_text(verdicts.model_dump_json(indent=2) + "\n", encoding="utf-8")
     revises = [item for item in verdicts.verdicts if item.decision == "REVISE"]
-    if revises:
+    batch = _load_proposals(root, state)
+    passed = _accepted(state, root, batch, verdicts)
+    if revises and _needs_critic_revision(state, passed):
         state.critic_revisions += 1
         message = "\n".join(f"{item.candidate_id}: {item.reason}" for item in revises)
-        if state.critic_revisions > 1:
+        if not passed and state.critic_revisions > 1:
             return _escalate(state, root, f"critic revision cap\n{message}")
         _write_note(root, state, message)
         state.stage = "PLAN"
         return _maybe_pause(state, root, "CRITIQUE")
-    batch = _load_proposals(root, state)
-    by_id = {item.candidate_id: item for item in verdicts.verdicts}
-    passed = []
-    for candidate in batch.candidates:
-        verdict = by_id.get(candidate.id)
-        if verdict is None or verdict.decision != "PASS":
-            continue
-        if _duplicate(candidate, passed, root):
-            continue
-        passed.append(candidate)
-    passed = _shortlist(state, passed)
     if not passed:
         return _escalate(state, root, "critic dropped every proposal")
     needed = min(3, state.k)
     families = {candidate.family for candidate in passed}
-    if state.round == 1 and state.round_operator == "draft" and len(families) < needed:
+    if (
+        not revises
+        and state.round == 1
+        and state.round_operator == "draft"
+        and len(families) < needed
+    ):
         state.critic_revisions += 1
         message = f"shortlist has {len(families)} families; need at least {needed}"
         if state.critic_revisions > 1:
@@ -491,11 +490,11 @@ def _search_critique(state: RunState, brief: Brief, root: Path) -> RunState:
         for node in state.nodes
         if not (node.search_round == state.round and node.status == "pending")
     ]
-    combine_parents = _combine_parents(state) if state.round_operator == "combine" else []
+    parents_for_combine = combine_parents(state) if state.round_operator == "combine" else []
     for candidate in passed:
         parents = (
-            list(combine_parents)
-            if combine_parents
+            list(parents_for_combine)
+            if parents_for_combine
             else ([candidate.parent_id] if candidate.parent_id else [])
         )
         state.nodes.append(
@@ -617,7 +616,7 @@ def _search_debug(state: RunState, brief: Brief, root: Path) -> RunState:
         operator="debug",
         parent_ids=node.parents,
         output_path=model_path,
-        note="Fix the preflight failure recorded in the fix chain.",
+        note="Fix the failure recorded in debug_log.md. Change only what that traceback requires.",
     )
     node.status = "implemented"
     state.stage = "PREFLIGHT"
@@ -632,10 +631,10 @@ def _search_submit(state: RunState, brief: Brief, root: Path, backend: object) -
             return _maybe_pause(state, root, "SUBMIT")
         return _escalate(state, root, "nothing to submit")
     cap = effective_concurrency(brief)
-    if cap is not None and _inflight_unfinished(state) >= cap:
+    node = _next_submittable(state, root, ready, cap)
+    if node is None:
         state.stage = "WAIT"
         return state
-    node = ready[0]
     key = _job_key(node)
     record = dict(state.submitted_jobs.get(key) or {})
     if not record.get("job_run_id"):
@@ -674,7 +673,13 @@ def _search_submit(state: RunState, brief: Brief, root: Path, backend: object) -
             device=node.device,
         )
         retries = int(record.get("infra_retries") or 0)
-        token = f"{state.run_id}:{key}" + (f":retry{retries}" if retries else "")
+        runtime = int(record.get("runtime_retries") or 0)
+        suffix = ""
+        if retries:
+            suffix += f":retry{retries}"
+        if runtime:
+            suffix += f":debug{runtime}"
+        token = f"{state.run_id}:{key}" + suffix
         job_run_id = backend.submit(  # type: ignore[attr-defined]
             job="train",
             job_key=key,
@@ -705,6 +710,9 @@ def _search_wait(state: RunState, root: Path, backend: object) -> RunState:
             continue
         pending.append((node, key, record))
     if not pending:
+        if any(node.status == "debugging" for node in _round_nodes(state)):
+            state.stage = "DEBUG"
+            return _maybe_pause(state, root, "WAIT")
         if any(node.status == "ready" for node in _round_nodes(state)):
             state.stage = "SUBMIT"
             return state
@@ -718,6 +726,13 @@ def _search_wait(state: RunState, root: Path, backend: object) -> RunState:
     if result.get("life_cycle_state") == "INTERNAL_ERROR":
         return _retry_infra_failure(state, root, node, key, record, result)
     if result.get("result_state") != "SUCCESS":
+        failure = _load_candidate_failure(root, state, node, result, record)
+        record["failure_kind"] = _failure_kind(result, failure)
+        if failure.get("traceback"):
+            record["traceback"] = failure.get("traceback")
+        state.submitted_jobs[key] = record
+        if node.rung == "R1" and _is_candidate_runtime(result, failure):
+            return _fail_runtime(state, root, node, key, record, failure)
         node.status = "failed"
     return state
 
@@ -739,12 +754,16 @@ def _retry_infra_failure(
     attempts.append({"job_run_id": record.get("job_run_id"), "state_message": message})
     retries = int(record.get("infra_retries") or 0)
     if retries >= MAX_INFRA_RETRIES:
-        record.update({"pruned": True, "failed_attempts": attempts})
+        record.update(
+            {"pruned": True, "failed_attempts": attempts, "failure_kind": "infra_crash"}
+        )
         state.submitted_jobs[key] = record
+        node.status = "failed"
         return _escalate(
             state,
             root,
-            f"infrastructure failure: {key} was killed {retries + 1} times; last: {message}",
+            f"infrastructure failure: infra_crash: {key} was killed "
+            f"{retries + 1} times; last: {message}",
         )
     state.submitted_jobs[key] = {"infra_retries": retries + 1, "failed_attempts": attempts}
     node.status = "ready"
@@ -791,8 +810,9 @@ def _search_prune(state: RunState, brief: Brief, root: Path, backend: object) ->
                 delta_vs_lgbm=lgbm,
                 delta_vs_production=production,
                 latency_p95_ms=None if latency is None else float(latency),
-                preflight="FAIL" if node.status == "failed" else (node.preflight or "PASS"),
-                review="FAIL" if node.status == "failed" else (node.review or "PASS"),
+                preflight=node.preflight or "PASS",
+                review=node.review or "PASS",
+                failure_kind=_view_failure_kind(node, record),
                 dbu=charged,
                 git_sha=state.git_sha,
                 mlflow_run_id=None if found is None else found.get("mlflow_run_id"),
@@ -834,10 +854,10 @@ def _search_prune(state: RunState, brief: Brief, root: Path, backend: object) ->
         state.promoted = list(decision.promoted)
         if decision.promoted:
             record_c00_promotion(root, state, rung)
-        _write_round_digest(root, state, decision)
+        write_round_digest(root, state, decision)
         if not state.promoted:
             state.stage = "REPORT"
-            _write_report(root, state, brief)
+            write_report(root, state, brief)
             return state
         state.stage = "CONFIRM"
         return _maybe_pause(state, root, "PRUNE")
@@ -851,14 +871,14 @@ def _search_prune(state: RunState, brief: Brief, root: Path, backend: object) ->
         state.stage = "SUBMIT"
         return _maybe_pause(state, root, "PRUNE")
     _record_gains(state)
-    _write_round_digest(root, state, decision)
+    write_round_digest(root, state, decision)
     return _advance_round(state, brief, root, bool(decision.survivors))
 
 
 def _search_confirm(state: RunState, brief: Brief, root: Path, backend: object) -> RunState:
     if not state.promoted:
         state.stage = "REPORT"
-        _write_report(root, state, brief)
+        write_report(root, state, brief)
         return state
     if not isinstance(backend, FakeJobs) and _others_inflight(root, state.run_id):
         return _escalate(state, root, "confirmation waits until other AMT runs finish")
@@ -918,14 +938,14 @@ def _search_confirm(state: RunState, brief: Brief, root: Path, backend: object) 
                 return _escalate(state, root, f"confirm job failed: {result}")
             return state
     state.stage = "REPORT"
-    _write_report(root, state, brief)
+    write_report(root, state, brief)
     return state
 
 
 def _advance_round(state: RunState, brief: Brief, root: Path, survived: bool) -> RunState:
     if state.scale == "calibration":
         state.stage = "REPORT"
-        _write_report(root, state, brief)
+        write_report(root, state, brief)
         return state
     if not survived:
         state.outer_retries += 1
@@ -933,6 +953,7 @@ def _advance_round(state: RunState, brief: Brief, root: Path, survived: bool) ->
             return _escalate(state, root, "outer retry cap")
         state.nodes = [node for node in state.nodes if node.search_round != state.round]
         state.rung_index = 0
+        _reset_revision_counters(state)
         state.stage = "PLAN"
         return _maybe_pause(state, root, "PRUNE")
     state.outer_retries = 0
@@ -949,7 +970,7 @@ def _advance_round(state: RunState, brief: Brief, root: Path, survived: bool) ->
     if brief.max_rounds is not None and state.round >= brief.max_rounds:
         nxt = "confirm"
     if nxt == "confirm":
-        pending = _unscored_final_r3(state)
+        pending = unscored_final_r3(state)
         if pending:
             for node in pending:
                 node.rung = "R3"
@@ -960,13 +981,14 @@ def _advance_round(state: RunState, brief: Brief, root: Path, survived: bool) ->
             return _maybe_pause(state, root, "PRUNE")
         if not state.promoted:
             state.stage = "REPORT"
-            _write_report(root, state, brief)
+            write_report(root, state, brief)
             return state
         state.stage = "CONFIRM"
         return _maybe_pause(state, root, "PRUNE")
     state.round += 1
     state.round_operator = nxt  # type: ignore[assignment]
     state.rung_index = 0
+    _reset_revision_counters(state)
     state.stage = "PLAN"
     return _maybe_pause(state, root, "PRUNE")
 
@@ -1050,97 +1072,21 @@ def _schema_retry(
 
 
 def _escalate(state: RunState, root: Path, reason: str) -> RunState:
+    _remember_escalation(state)
     state.stage = "ESCALATE"
     _write_escalate(root, state, reason)
+    write_report_json(root, state)
     return state
 
 
-def _proposal_problems(state: RunState, batch: ProposalBatch) -> list[str]:
-    allowed = set(_allowed_parent_list(state))
-    problems: list[str] = []
-    seen: set[tuple[str, str, str]] = set()
-    for candidate in batch.candidates:
-        if candidate.id == C00_ID and state.scale != "calibration":
-            problems.append(f"{candidate.id} is reserved for the LightGBM reference")
-        if candidate.operator != state.round_operator:
-            problems.append(
-                f"{candidate.id} operator is {candidate.operator}; "
-                f"this round requires {state.round_operator}"
-            )
-        if state.round_operator != "draft" and candidate.parent_id not in allowed:
-            problems.append(f"{candidate.id} parent is not one of {sorted(allowed)}")
-        key = _feature_key(candidate.family, candidate.claim, candidate.change)
-        if key in seen:
-            problems.append(f"{candidate.id} repeats a proposal already in this batch")
-        seen.add(key)
-    if state.scale == "small" and state.round == 1 and state.round_operator == "draft":
-        if len(batch.candidates) < 8:
-            problems.append(
-                f"round 1 on a K=4 run must propose 8 drafts; got {len(batch.candidates)}"
-            )
-    if state.scale == "small" and state.round_operator == "improve":
-        for parent in _allowed_parent_list(state):
-            if parent == C00_ID:
-                continue
-            count = sum(1 for candidate in batch.candidates if candidate.parent_id == parent)
-            if count < 3:
-                problems.append(f"propose 3 improvements of {parent}; found {count}")
-    return problems
+def _remember_escalation(state: RunState) -> None:
+    if state.escalated_from_stage is None and state.stage != "ESCALATE":
+        state.escalated_from_stage = state.stage
 
 
-def _duplicate(candidate: Any, accepted: list[Any], root: Path) -> bool:
-    key = _feature_key(candidate.family, candidate.claim, candidate.change)
-    for other in accepted:
-        if _feature_key(other.family, other.claim, other.change) == key:
-            return True
-    claim = candidate.claim.strip().lower()
-    for row in read_rows(root):
-        if row.family == candidate.family and row.claim.strip().lower() == claim:
-            return True
-    return False
-
-
-def _feature_key(family: str, claim: str, change: str | None) -> tuple[str, str, str]:
-    return (family.strip().lower(), claim.strip().lower(), (change or "").strip().lower())
-
-
-def _allowed_parent_list(state: RunState) -> list[str]:
-    if state.round_operator == "draft":
-        return []
-    if state.round_operator == "combine":
-        parents = _combine_parents(state)
-    else:
-        previous = state.round - 1
-        kept = [
-            node
-            for node in state.nodes
-            if node.status == "kept" and node.search_round == previous and node.node_id != C00_ID
-        ]
-        if state.scale == "small":
-            parents = _top_lineages(kept, limit=2)
-        else:
-            parents = [node.node_id for node in kept]
-    if _archive_ready(state) and C00_ID not in parents:
-        parents = [C00_ID, *parents]
-    return parents
-
-
-def _archive_ready(state: RunState) -> bool:
-    return any(
-        node.node_id == C00_ID and node.family == "lgbm_reference" for node in state.nodes
-    )
-
-
-def _combine_parents(state: RunState) -> list[str]:
-    kept = [node for node in state.nodes if node.status == "kept" and node.node_id != C00_ID]
-    kept.sort(key=lambda node: (-node.search_round, -(node.delta_point or 0.0), node.node_id))
-    found: list[str] = []
-    for node in kept:
-        if node.node_id not in found:
-            found.append(node.node_id)
-        if len(found) == 2:
-            break
-    return found
+def _reset_revision_counters(state: RunState) -> None:
+    state.revisions = 0
+    state.critic_revisions = 0
 
 
 def _round_nodes(state: RunState) -> list[NodeWork]:
@@ -1160,19 +1106,6 @@ def _rungs_for(state: RunState) -> list[str]:
     return rungs_for(state.round_operator, scale=state.scale)
 
 
-def _unscored_final_r3(state: RunState) -> list[NodeWork]:
-    """R2 survivors that are about to be confirmed and have not run R3."""
-
-    return [
-        node
-        for node in state.nodes
-        if node.node_id != C00_ID
-        and node.search_round == state.round
-        and node.status in {"kept", "promoted"}
-        and node.rung != "R3"
-    ]
-
-
 def _job_key(node: NodeWork) -> str:
     return f"{node.node_id}/{node.rung}/{node.seed}"
 
@@ -1184,6 +1117,186 @@ def _inflight_unfinished(state: RunState) -> int:
             continue
         count += 1
     return count
+
+
+def _accepted(
+    state: RunState, root: Path, batch: ProposalBatch, verdicts: VerdictBatch
+) -> list[Candidate]:
+    by_id = {item.candidate_id: item for item in verdicts.verdicts}
+    passed: list[Candidate] = []
+    for candidate in batch.candidates:
+        verdict = by_id.get(candidate.id)
+        if verdict is None or verdict.decision != "PASS":
+            continue
+        if duplicate_candidate(candidate, passed, root):
+            continue
+        passed.append(candidate)
+    return shortlist(state, passed)
+
+
+def _needs_critic_revision(state: RunState, passed: list[Candidate]) -> bool:
+    """Revise once when nothing passed, or when the shortlist is still short of K."""
+
+    if not passed:
+        return True
+    return len(passed) < state.k and state.critic_revisions < 1
+
+
+def _next_submittable(
+    state: RunState, root: Path, ready: list[NodeWork], cap: int
+) -> NodeWork | None:
+    """Next ready node. Shared clusters run one R3 job at a time."""
+
+    if _inflight_unfinished(state) >= cap:
+        return None
+    fixed = load_settings(root).fixed_cluster
+    r3_inflight = _inflight_rung(state, "R3")
+    for node in ready:
+        if fixed and node.rung == "R3" and r3_inflight >= 1:
+            continue
+        return node
+    return None
+
+
+def _inflight_rung(state: RunState, rung: str) -> int:
+    count = 0
+    for key, record in state.submitted_jobs.items():
+        if record.get("pruned") or record.get("result_state") or not record.get("job_run_id"):
+            continue
+        parts = key.split("/")
+        if len(parts) >= 2 and parts[1] == rung:
+            count += 1
+    return count
+
+
+def _view_failure_kind(
+    node: NodeWork, record: dict[str, Any]
+) -> Literal["infra_crash", "runtime_error"] | None:
+    kind = record.get("failure_kind")
+    if kind in {"infra_crash", "runtime_error"}:
+        return str(kind)
+    preflight_failed = (node.preflight or "PASS") == "FAIL"
+    review_failed = (node.review or "PASS") == "FAIL"
+    if node.status == "failed" and not preflight_failed and not review_failed:
+        return "runtime_error"
+    return None
+
+
+def _failure_kind(result: dict[str, Any], failure: dict[str, Any]) -> str:
+    if result.get("life_cycle_state") == "INTERNAL_ERROR":
+        return "infra_crash"
+    if failure.get("traceback"):
+        return "runtime_error"
+    message = str(result.get("state_message") or failure.get("message") or "").lower()
+    markers = ("driver", "cluster", "internal error", "spot", "shutdown")
+    if any(token in message for token in markers):
+        return "infra_crash"
+    return "runtime_error"
+
+
+def _is_candidate_runtime(result: dict[str, Any], failure: dict[str, Any]) -> bool:
+    if result.get("life_cycle_state") == "INTERNAL_ERROR":
+        return False
+    if result.get("result_state") == "SUCCESS":
+        return False
+    return bool(str(failure.get("traceback") or "").strip())
+
+
+def _fail_runtime(
+    state: RunState,
+    root: Path,
+    node: NodeWork,
+    key: str,
+    record: dict[str, Any],
+    failure: dict[str, Any],
+) -> RunState:
+    """Send one R1 candidate exception to DEBUG. Siblings keep their jobs."""
+
+    reason = str(failure.get("traceback") or failure.get("message") or "candidate runtime error")
+    _append_debug(root, state.run_id, node, reason)
+    if node.debug_attempts >= MAX_DEBUG_ATTEMPTS:
+        node.status = "failed"
+        record["failure_kind"] = "runtime_error"
+        state.submitted_jobs[key] = record
+        return state
+    attempts = list(record.get("failed_attempts") or [])
+    attempts.append({"job_run_id": record.get("job_run_id"), "traceback": reason})
+    state.submitted_jobs[key] = {
+        "runtime_retries": int(record.get("runtime_retries") or 0) + 1,
+        "failed_attempts": attempts,
+        "failure_kind": "runtime_error",
+    }
+    node.debug_attempts += 1
+    node.status = "debugging"
+    state.candidate_id = node.node_id
+    if _inflight_unfinished(state):
+        state.stage = "WAIT"
+        return state
+    state.stage = "DEBUG"
+    return _maybe_pause(state, root, "WAIT")
+
+
+def _load_candidate_failure(
+    root: Path,
+    state: RunState,
+    node: NodeWork,
+    result: dict[str, Any],
+    record: dict[str, Any],
+) -> dict[str, Any]:
+    embedded = result.get("failure")
+    if isinstance(embedded, dict):
+        return embedded
+    if result.get("traceback"):
+        return {
+            "traceback": str(result.get("traceback")),
+            "message": str(result.get("state_message") or ""),
+            "exception_type": "CandidateError",
+        }
+    local = candidate_dir(root, state.run_id, node.node_id) / "failure.json"
+    loaded = _read_json_file(local)
+    if loaded:
+        return loaded
+    job_run_id = str(record.get("job_run_id") or "")
+    if job_run_id:
+        loaded = _read_json_file(root / "runs" / "jobs" / f"{job_run_id}-failure.json")
+        if loaded:
+            return loaded
+    if os.environ.get("AMT_JOBS_BACKEND", "").lower() == "fake":
+        return {}
+    try:
+        from amt.volume import VolumeError
+        from amt.volume import get as volume_get
+        from harness.train import candidate_failure_path
+
+        settings = load_settings(root)
+        remote = candidate_failure_path(
+            settings.catalog,
+            settings.schema_name,
+            state.run_id,
+            node.node_id,
+            node.rung,
+            node.seed,
+        )
+        if not str(remote).startswith("/Volumes"):
+            return _read_json_file(remote) or {}
+        downloaded = root / "runs" / "jobs" / f"{node.node_id}-{node.rung}-failure.json"
+        try:
+            volume_get(root, str(remote), downloaded)
+        except VolumeError:
+            return {}
+        return _read_json_file(downloaded) or {}
+    except Exception:
+        return {}
+
+
+def _read_json_file(path: Path) -> dict[str, Any] | None:
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _next_job_estimate(root: Path, brief: Brief, state: RunState, node: NodeWork) -> float:
@@ -1325,7 +1438,7 @@ def _append_debug(root: Path, run_id: str, node: NodeWork, reason: str) -> None:
 
 def _plan_note(state: RunState, feedback: str) -> str:
     lines = [f"This is round {state.round}. Propose {state.round_operator} candidates."]
-    parents = _allowed_parent_list(state)
+    parents = allowed_parents(state)
     if parents:
         lines.append("Allowed parents: " + ", ".join(parents))
     if state.round_operator == "improve":
@@ -1365,90 +1478,6 @@ def _write_note(root: Path, state: RunState, message: str) -> None:
 def _clear_feedback(root: Path, state: RunState) -> None:
     path = root / "runs" / state.run_id / "agent_feedback.md"
     path.unlink(missing_ok=True)
-
-
-def _write_round_digest(root: Path, state: RunState, decision: Any) -> None:
-    path = root / "runs" / state.run_id / f"round_{state.round}.md"
-    rows = [
-        row for row in read_rows(root) if row.run_id == state.run_id and row.round == state.round
-    ]
-    lines = [
-        f"# Round {state.round}",
-        "",
-        f"Operator: {state.round_operator}",
-        "",
-        "## Proposals and verdicts",
-    ]
-    verdict_path = root / "runs" / state.run_id / f"round_{state.round}_verdicts.json"
-    if verdict_path.is_file():
-        lines.append(verdict_path.read_text(encoding="utf-8").strip())
-    else:
-        lines.append("(none)")
-    lines.extend(["", "## Kills"])
-    kills = [row for row in rows if row.status in {"killed", "failed"}]
-    if not kills:
-        lines.append("(none)")
-    else:
-        for row in kills:
-            lines.append(f"- {row.node_id} {row.rung}: {row.kill_reason}")
-    lines.extend(["", "## Survivors"])
-    survivors = list(getattr(decision, "survivors", []) or [])
-    if not survivors:
-        lines.append("(none)")
-    by_id = {item.node_id: item for item in getattr(decision, "decisions", [])}
-    for node_id in survivors:
-        item = by_id.get(node_id)
-        delta = None if item is None else item.delta
-        if delta is None:
-            lines.append(f"- {node_id}")
-        else:
-            lines.append(
-                f"- {node_id} delta {delta.point:.4f} CI [{delta.ci_lo:.4f}, {delta.ci_hi:.4f}]"
-            )
-    lines.extend(["", "## Spend", f"Spent {state.spent_dbu:.3f} / {state.budget_dbu:.3f} DBU", ""])
-    lines.append(stats_summary(write_agent_stats(root, state)))
-    lines.append("")
-    path.write_text("\n".join(lines), encoding="utf-8")
-
-
-def _write_report(root: Path, state: RunState, brief: Brief) -> None:
-    path = root / "runs" / state.run_id / "report.md"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(finish_run_report(root, state, brief), encoding="utf-8")
-
-
-def _shortlist(state: RunState, passed: list[Candidate]) -> list[Candidate]:
-    """K=4 improvement rounds keep two children of each parent. Other rounds keep K."""
-
-    if state.scale == "small" and state.round_operator == "improve":
-        kept: list[Candidate] = []
-        per_parent: dict[str, int] = {}
-        for candidate in passed:
-            parent = candidate.parent_id or ""
-            if per_parent.get(parent, 0) >= 2:
-                continue
-            per_parent[parent] = per_parent.get(parent, 0) + 1
-            kept.append(candidate)
-            if len(kept) >= state.k:
-                break
-        return kept
-    return passed[: state.k]
-
-
-def _top_lineages(nodes: list[NodeWork], limit: int) -> list[str]:
-    """Best kept node in each family, then the strongest families."""
-
-    best: dict[str, NodeWork] = {}
-    for node in nodes:
-        current = best.get(node.family)
-        if current is None or _lineage_rank(node) < _lineage_rank(current):
-            best[node.family] = node
-    ordered = sorted(best.values(), key=_lineage_rank)
-    return [node.node_id for node in ordered[:limit]]
-
-
-def _lineage_rank(node: NodeWork) -> tuple[float, str]:
-    return (-(node.delta_point or 0.0), node.node_id)
 
 
 def _approved(root: Path, run_id: str) -> bool:

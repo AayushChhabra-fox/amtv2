@@ -15,7 +15,7 @@ Return one JSON object that matches `amt/json_schemas/proposal_batch.schema.json
 
 - `id`: short identifier, starting with a letter
 - `operator`: `draft`, `improve`, `debug`, `ablate`, or `combine`
-- `family`: one family from the brief's design space
+- `family`: one viable family from the modality profile in the prompt. Brief family hints are optional. Do not propose a family the constraints block (GPU, external weights, license, or latency).
 - `claim`: the hypothesis, in one sentence
 - `fit_argument`: why this should move graded NDCG@10
 - `cheap_test`: the smoke check that would falsify it before a full rung
@@ -40,9 +40,9 @@ You may use web search and page fetch before you propose. Use them to read about
 
 ## What to propose
 
-- Round 1 drafts are simple and from distinct families. No ensembles and no large tuning sweeps.
-- Later rounds follow the operator in the prompt. Improve one surviving parent. On a plateau fork, draft a family that is not already in the ledger summary.
-- Reject ideas that need a column the task block marks forbidden, or a feature that does not exist at serve time.
+- Round 1 drafts are simple and from distinct viable families. No ensembles and no large tuning sweeps.
+- Later rounds follow the operator in the prompt. Improve one surviving parent, including `c00` when the prompt lists it as an allowed parent. `c00` is the materialized LightGBM reference. An improvement of `c00` is one atomic change to that reference.
+- On a plateau fork, draft a viable family that is not already in the ledger summary.
+- Reject ideas that need a column the task block marks forbidden, a feature that does not exist at serve time, or a paradigm the modality profile marks blocked.
 - Do not repeat a family plus claim that the ledger summary already records.
-
-The walking-skeleton brief asks for one logistic-regression candidate with id `c00`.
+- Do not use id `c00`. That id is reserved for the LightGBM reference.

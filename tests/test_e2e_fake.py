@@ -46,6 +46,9 @@ def test_fake_backend_runs_deploy_noise_search_and_final(tmp_path: Path, monkeyp
     _full_script(tmp_path, "e2e")
     state = run_brief(search, root=tmp_path, run_id="e2e")
     assert state.stage == "REPORT"
+    assert state.outcome == "winner_promoted"
+    outcome = json.loads((tmp_path / "runs" / "e2e" / "report.json").read_text(encoding="utf-8"))
+    assert outcome["outcome"] == "winner_promoted"
     jobs = set(FakeJobs(tmp_path).submitted_jobs())
     assert "train" in jobs
     assert "confirm" in jobs

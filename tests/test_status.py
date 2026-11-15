@@ -39,6 +39,7 @@ def _state(root: Path) -> None:
                 "live_nodes": ["c1", "c2"],
                 "spent_dbu": 12.5,
                 "budget_dbu": 100,
+                "outcome": "no_winner",
             }
         )
     )
@@ -60,6 +61,7 @@ def test_status_shows_spend_live_nodes_and_kills(tmp_path: Path) -> None:
     )
     text = format_status(tmp_path, "toy", audit=True)
     assert "spend 12.500 / 100.000 DBU" in text
+    assert "outcome no_winner" in text
     assert "live nodes" in text
     assert "c1" in text
     assert "c2" in text

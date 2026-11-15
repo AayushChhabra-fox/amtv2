@@ -55,6 +55,8 @@ def build_context(
         "",
         _ledger_block(root, brief, run_id),
     ]
+    if role in {"planner", "critic"}:
+        lines.extend(["", _constraint_block(brief), "", _modality_block(root, brief)])
     if operator in {"draft", "improve"}:
         lines.extend(["", _sibling_block(root, run_id, node_id, operator)])
     if operator == "debug":
@@ -100,6 +102,60 @@ def build_context(
     lines.append("")
     lines.append(_output_contract(role))
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _constraint_block(brief: Brief) -> str:
+    constraints = brief.constraints
+    latency = None
+    if brief.efficiency.serving is not None:
+        latency = brief.efficiency.serving.latency_p95_ms_per_100_candidates
+    shown = "(unset)" if latency is None else str(latency)
+    return "\n".join(
+        [
+            "Constraints:",
+            f"  allow_gpu_serving: {constraints.allow_gpu_serving}",
+            f"  allow_external_weights: {constraints.allow_external_weights}",
+            f"  license_policy: {constraints.license_policy}",
+            f"  latency_p95_ms_per_100_candidates: {shown}",
+        ]
+    )
+
+
+def _modality_block(root: Path, brief: Brief) -> str:
+    """Viable families from the ready-gate manifest, plus the c00 parent rule."""
+
+    fallback = (
+        "Modality profile: (unavailable). Choose a family the constraints allow. "
+        "c00 is the LightGBM reference; improve it only when it is an allowed parent."
+    )
+    if not brief.name:
+        return fallback
+    path = root / "gates" / "ready" / brief.name / "manifest.json"
+    if not path.is_file():
+        return fallback
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return fallback
+    from amt.modality import paradigm_decisions, profile_from_manifest
+
+    profile = profile_from_manifest(payload) if isinstance(payload, dict) else None
+    if profile is None:
+        return fallback
+    decisions = paradigm_decisions(profile, brief)
+    viable = [item.name for item in decisions if item.viable]
+    blocked = [f"{item.name} ({item.reason})" for item in decisions if not item.viable]
+    lines = [
+        "Modality profile: " + json.dumps(profile.model_dump(mode="json"), sort_keys=True),
+        "Viable families: " + (", ".join(viable) or "(none)"),
+    ]
+    if blocked:
+        lines.append("Blocked families: " + "; ".join(blocked))
+    lines.append(
+        "Choose families from the viable list. Brief family hints are optional. "
+        "c00 is the materialized LightGBM reference; improve it only when it is an allowed parent."
+    )
+    return "\n".join(lines)
 
 
 def _ledger_block(root: Path, brief: Brief, run_id: str | None) -> str:

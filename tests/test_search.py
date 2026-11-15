@@ -13,8 +13,9 @@ from amt.gates import publish_ready_packet, sign_ready
 from amt.jobs_backend import FakeJobs
 from amt.ladder import build_ladder_report
 from amt.noise import build_noise_report
-from amt.orchestrator import fork_on_plateau, operator_for_round, run_brief
+from amt.orchestrator import run_brief
 from amt.schemas import Brief, load_brief
+from amt.search_policy import fork_on_plateau, operator_for_round
 from amt.status import audit_rows
 from tests.test_ladder import _cells as ladder_cells
 from tests.test_noise import _brief, _cells
@@ -178,7 +179,12 @@ def test_fake_loop_reaches_report(tmp_path: Path, monkeypatch) -> None:
     _full_script(tmp_path)
     state = run_brief(brief, root=tmp_path)
     assert state.stage == "REPORT"
+    assert state.outcome == "winner_promoted"
     assert state.promoted == ["c04"]
+    report_json = json.loads(
+        (tmp_path / "runs" / "search" / "report.json").read_text(encoding="utf-8")
+    )
+    assert report_json["outcome"] == "winner_promoted"
     assert FakeJobs(tmp_path).submit_count() == 13
     assert (tmp_path / "runs" / "search" / "candidates" / "c00" / "model.py").is_file()
     assert (tmp_path / "runs" / "search" / "round_1.md").is_file()
@@ -187,6 +193,7 @@ def test_fake_loop_reaches_report(tmp_path: Path, monkeypatch) -> None:
     assert "c01" in digest
     report = (tmp_path / "runs" / "search" / "report.md").read_text(encoding="utf-8")
     assert "c03" in report
+    assert "Outcome: winner_promoted" in report
     assert audit_rows(tmp_path, "search") == []
     again = run_brief(brief, root=tmp_path)
     assert again.stage == "REPORT"
@@ -445,3 +452,78 @@ def test_approve_command_writes_the_file(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     assert main(["approve", "--run-id", "search"]) == 0
     assert (tmp_path / "runs" / "search" / "APPROVE").is_file()
+
+
+def test_partial_critic_keeps_the_passing_candidate(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("AMT_JOBS_BACKEND", "fake")
+    monkeypatch.setenv("AMT_AGENT_BACKEND", "fake")
+    monkeypatch.setenv("AMT_GIT_SHA", "abc123")
+    monkeypatch.setenv("AMT_STOP_AFTER", "SPEC")
+    brief = _sign(tmp_path, run_id="partial", k=2)
+    revise = {
+        "candidate_id": "c02",
+        "decision": "REVISE",
+        "reason": "The second draft repeats a serve-time input.",
+    }
+    proposal = {
+        "candidates": [
+            _candidate("c01", "draft"),
+            _candidate("c02", "draft", claim="a second linear draft"),
+        ]
+    }
+    _script(
+        tmp_path,
+        "partial",
+        [
+            {"role": "planner", "output": proposal},
+            {"role": "critic", "output": {"verdicts": [_pass("c01"), revise]}},
+            {"role": "planner", "output": proposal},
+            {"role": "critic", "output": {"verdicts": [_pass("c01"), revise]}},
+        ],
+    )
+    state = run_brief(brief, root=tmp_path)
+    assert state.stage == "IMPLEMENT"
+    assert state.live_nodes == ["c01"]
+    assert state.critic_revisions == 1
+    assert not (tmp_path / "runs" / "partial" / "ESCALATE.md").exists()
+
+
+def test_revision_counters_reset_when_the_round_changes(tmp_path: Path) -> None:
+    from amt.orchestrator import _advance_round
+    from amt.schemas import NodeWork, RunState
+
+    brief = Brief.model_validate({"budget": {"total_dbu": 10}, "min_effect": 0.01})
+    state = RunState(
+        run_id="r",
+        brief_path="b.yaml",
+        stage="PRUNE",
+        round=1,
+        candidate_id="c01",
+        family="linear",
+        rung="R2",
+        seed=0,
+        batch="b",
+        round_operator="draft",
+        revisions=2,
+        critic_revisions=1,
+        nodes=[
+            NodeWork(
+                node_id="c01",
+                family="linear",
+                status="kept",
+                search_round=1,
+                delta_point=0.05,
+                rung="R2",
+            )
+        ],
+    )
+    retried = _advance_round(state.model_copy(deep=True), brief, tmp_path, False)
+    assert retried.stage == "PLAN"
+    assert retried.outer_retries == 1
+    assert retried.revisions == 0
+    assert retried.critic_revisions == 0
+    advanced = _advance_round(state.model_copy(deep=True), brief, tmp_path, True)
+    assert advanced.round == 2
+    assert advanced.round_operator == "improve"
+    assert advanced.revisions == 0
+    assert advanced.critic_revisions == 0

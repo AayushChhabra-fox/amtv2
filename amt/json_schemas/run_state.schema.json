@@ -498,6 +498,50 @@
       "description": "An R2 survivor is taking the R3 pass before confirmation.",
       "title": "Scoring Final R3",
       "type": "boolean"
+    },
+    "outcome": {
+      "anyOf": [
+        {
+          "enum": [
+            "winner_promoted",
+            "baseline_c00_promoted",
+            "no_winner"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Outcome"
+    },
+    "escalated_from_stage": {
+      "anyOf": [
+        {
+          "enum": [
+            "PLAN",
+            "CRITIQUE",
+            "SPEC",
+            "IMPLEMENT",
+            "PREFLIGHT",
+            "SMOKE",
+            "DEBUG",
+            "SUBMIT",
+            "WAIT",
+            "PRUNE",
+            "CONFIRM",
+            "REPORT",
+            "ESCALATE"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Escalated From Stage"
     }
   },
   "required": [

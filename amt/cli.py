@@ -35,7 +35,7 @@ from amt.ladder import build_ladder_report, ladder_jobs
 from amt.ladder import load_cells as load_ladder_cells
 from amt.noise import GateDataError, build_noise_report, round0_jobs
 from amt.noise import load_cells as load_noise_cells
-from amt.orchestrator import run_brief
+from amt.orchestrator import resume_brief, run_brief
 from amt.prep import PrepError, run_prep
 from amt.scale import (
     g3_is_current,
@@ -67,6 +67,10 @@ def main(argv: list[str] | None = None) -> int:
         choices=["search", "calibration", "small", "full"],
         help="calibration is G3, small is the K=4 run, full records Phase 2 entry",
     )
+
+    resume_parser = sub.add_parser("resume", help="continue a run from its saved state")
+    resume_parser.add_argument("--run-id", required=True)
+    resume_parser.add_argument("--root", type=Path, default=None)
 
     status_parser = sub.add_parser("status", help="print run status")
     status_parser.add_argument("--run-id", default="toy")
@@ -225,8 +229,14 @@ def main(argv: list[str] | None = None) -> int:
             approval_mode=args.approval_mode,
             scale=args.scale,
         )
-        print(format_status(root, state.run_id, audit=state.stage == "REPORT"))
-        return 0 if state.stage == "REPORT" else 1
+        return _emit_run(root, state)
+    if args.command == "resume":
+        try:
+            state = resume_brief(args.run_id, root=root)
+        except FileNotFoundError as exc:
+            print(str(exc))
+            return 1
+        return _emit_run(root, state)
     if args.command == "status":
         print(format_status(root, args.run_id, audit=args.audit))
         if args.audit and audit_rows(root, args.run_id):
@@ -243,6 +253,13 @@ def main(argv: list[str] | None = None) -> int:
     stop_path.write_text("stop\n")
     print(f"wrote {stop_path}")
     return 0
+
+
+def _emit_run(root: Path, state: RunState) -> int:
+    if state.stage == "REPORT" and state.outcome:
+        print(f"OUTCOME: {state.outcome}")
+    print(format_status(root, state.run_id, audit=state.stage == "REPORT"))
+    return 0 if state.stage == "REPORT" else 1
 
 
 def _load_optional_brief(root: Path, path: Path | None):

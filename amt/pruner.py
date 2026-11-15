@@ -18,7 +18,7 @@ import random
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -114,6 +114,7 @@ class RunView(BaseModel):
     divergent: bool = False
     preflight: str | None = None
     review: str | None = None
+    failure_kind: Literal["infra_crash", "runtime_error"] | None = None
     git_sha: str = "unknown"
     mlflow_run_id: str | None = None
     job_run_id: str | None = None
@@ -699,6 +700,10 @@ def _hard_kill(seeds: Sequence[RunView], summary: _Summary, brief: Brief) -> Nod
         return _node(summary, status="failed", rule="preflight", kill_reason="preflight FAIL")
     if any(str(seed.review or "").upper() == "FAIL" for seed in seeds):
         return _node(summary, status="failed", rule="review", kill_reason="review FAIL")
+    if any(seed.failure_kind == "infra_crash" for seed in seeds):
+        return _node(summary, status="failed", rule="infra_crash", kill_reason="infra_crash")
+    if any(seed.failure_kind == "runtime_error" for seed in seeds):
+        return _node(summary, status="failed", rule="runtime_error", kill_reason="runtime_error")
     if any(not _seed_has_metrics(seed) for seed in seeds):
         return _node(summary, status="failed", rule="no_metrics", kill_reason=_NO_METRIC)
     if any(_bad_number(seed) for seed in seeds):

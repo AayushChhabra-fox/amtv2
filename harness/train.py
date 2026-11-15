@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import time
+import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -72,6 +73,7 @@ class TrainResult:
     tags: dict[str, str] = field(default_factory=dict)
     latency_p95_ms: float | None = None
     reason: str | None = None
+    traceback: str | None = None
 
 
 def load_rows(path: Path) -> list[dict]:
@@ -319,8 +321,69 @@ def train_ranker(
         return result
     except Exception as exc:
         result.reason = str(exc)
+        result.traceback = _traceback_tail(exc)
         result.metrics = {}
         return result
+
+
+def candidate_failure_path(
+    catalog: str,
+    schema: str,
+    run_id: str,
+    node_id: str,
+    rung: str,
+    seed: int | str,
+) -> Path:
+    """``failure.json`` for one candidate job.
+
+    ``AMT_TRAIN_FAILURE_ROOT`` redirects the write in tests. The cluster job
+    leaves it unset and writes under the artifact volume.
+    """
+
+    override = os.environ.get("AMT_TRAIN_FAILURE_ROOT", "").strip()
+    base = Path(override) if override else Path(f"/Volumes/{catalog}/{schema}/amt_artifacts")
+    return base / "train_failures" / run_id / node_id / rung / str(seed) / "failure.json"
+
+
+def write_candidate_failure(path: Path, payload: dict) -> None:
+    """Best-effort ``failure.json``. A write error must not hide the exception."""
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8")
+    except OSError:
+        return
+
+
+def _traceback_tail(exc: BaseException) -> str:
+    lines = traceback.format_exception(type(exc), exc, exc.__traceback__)
+    return "\n".join("".join(lines).splitlines()[-40:])
+
+
+def _record_candidate_failure(
+    args: argparse.Namespace,
+    model_path: Path | None,
+    catalog: str,
+    schema: str,
+    payload: dict,
+) -> None:
+    node_id = str(args.node_id or args.candidate_id or "")
+    run_id = str(args.run_id or args.batch or "")
+    remote = candidate_failure_path(catalog, schema, run_id, node_id, args.rung, args.seed)
+    write_candidate_failure(remote, payload)
+    if model_path is not None and not args.baseline:
+        write_candidate_failure(Path(model_path).parent / "failure.json", payload)
+
+
+def _failure_payload(args: argparse.Namespace, exc: BaseException) -> dict:
+    return {
+        "exception_type": type(exc).__name__,
+        "message": str(exc),
+        "traceback": _traceback_tail(exc),
+        "rung": str(getattr(args, "rung", "") or ""),
+        "node_id": str(getattr(args, "node_id", "") or getattr(args, "candidate_id", "") or ""),
+        "run_id": str(getattr(args, "run_id", "") or ""),
+    }
 
 
 def make_same(ranker):
@@ -497,7 +560,11 @@ def _execute(args: argparse.Namespace) -> None:
     install_s = 0.0
     if not args.baseline:
         requirements_sha, install_s = activate_candidate_requirements(model_path)
-    ranker = make_ranker(args.baseline or None, model_path, args.reference_score)
+    try:
+        ranker = make_ranker(args.baseline or None, model_path, args.reference_score)
+    except Exception as exc:
+        _record_candidate_failure(args, model_path, catalog, schema, _failure_payload(args, exc))
+        raise
     tags = mlflow_tags(
         run_id=args.run_id or args.batch,
         node_id=args.node_id or args.candidate_id,
@@ -531,6 +598,21 @@ def _execute(args: argparse.Namespace) -> None:
         baseline_scores=None if paired is None else paired.tolist(),
         tags=tags,
     )
+    if result.traceback:
+        _record_candidate_failure(
+            args,
+            model_path,
+            catalog,
+            schema,
+            {
+                "exception_type": "CandidateError",
+                "message": result.reason or "",
+                "traceback": result.traceback,
+                "rung": args.rung,
+                "node_id": args.node_id or args.candidate_id,
+                "run_id": args.run_id,
+            },
+        )
     if result.status == "ok" and keyed is not None:
         from harness.evaluate import paired_day_blocked_delta
 

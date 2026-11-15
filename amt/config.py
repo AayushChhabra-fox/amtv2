@@ -142,5 +142,6 @@ INTERNAL_ENV = frozenset(
         "AMT_REQUIRE_BASELINES",
         "AMT_LIVE_DATABRICKS",
         "AMT_DATASET_FAILURE_ROOT",
+        "AMT_TRAIN_FAILURE_ROOT",
     }
 )

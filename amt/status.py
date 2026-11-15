@@ -26,6 +26,10 @@ def format_status(root: Path, run_id: str, *, audit: bool = False) -> str:
             f"stage {state.get('stage')}  round {state.get('round', 0)}  "
             f"spend {_num(state.get('spent_dbu', 0))} / {_num(state.get('budget_dbu', 0))} DBU"
         )
+        if state.get("outcome"):
+            lines.append(f"outcome {state['outcome']}")
+        if state.get("escalated_from_stage"):
+            lines.append(f"escalated from {state['escalated_from_stage']}")
         for key, record in (state.get("submitted_jobs") or {}).items():
             lines.append(
                 f"job {key}  run_id={record.get('job_run_id')}  "

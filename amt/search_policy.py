@@ -15,7 +15,18 @@ import yaml
 
 from amt.ledger import append, read_rows
 from amt.paths import candidate_dir
-from amt.schemas import Brief, DeltaVsBaseline, LedgerRow, NodeWork, RungScore, RunState
+from amt.schemas import (
+    Brief,
+    Candidate,
+    DeltaVsBaseline,
+    LedgerRow,
+    NodeWork,
+    ProposalBatch,
+    RungScore,
+    RunState,
+)
+
+MAX_ROUNDS = 4
 
 C00_ID = "c00"
 ARCHIVE_FAMILY = "lgbm_reference"
@@ -310,3 +321,166 @@ def _mean_production(rows: list[dict]) -> DeltaVsBaseline | None:
         ci_lo=_avg("delta_ci_lo"),
         ci_hi=_avg("delta_ci_hi"),
     )
+
+
+def operator_for_round(round_number: int, *, plateau: bool, lineage_count: int) -> str:
+    """Operator for a round. Round 4 combines two lineages; a plateau forks to a new draft."""
+
+    if round_number <= 1:
+        return "draft"
+    if round_number > MAX_ROUNDS:
+        return "confirm"
+    if round_number == MAX_ROUNDS:
+        return "combine" if lineage_count >= 2 else "confirm"
+    if plateau:
+        return "draft"
+    return "improve"
+
+
+def fork_on_plateau(gains: list[float], min_effect: float) -> bool:
+    """True when the last two improvements each sit below the noise floor."""
+
+    if len(gains) < 2:
+        return False
+    return gains[-1] < min_effect and gains[-2] < min_effect
+
+
+def shortlist(state: RunState, passed: list[Candidate]) -> list[Candidate]:
+    """K=4 improvement rounds keep two children of each parent. Other rounds keep K."""
+
+    if state.scale == "small" and state.round_operator == "improve":
+        kept: list[Candidate] = []
+        per_parent: dict[str, int] = {}
+        for candidate in passed:
+            parent = candidate.parent_id or ""
+            if per_parent.get(parent, 0) >= 2:
+                continue
+            per_parent[parent] = per_parent.get(parent, 0) + 1
+            kept.append(candidate)
+            if len(kept) >= state.k:
+                break
+        return kept
+    return passed[: state.k]
+
+
+def duplicate_candidate(candidate: Candidate, accepted: list[Candidate], root: Path) -> bool:
+    """True when this batch or the ledger already has the same family, claim, and change."""
+
+    key = feature_key(candidate.family, candidate.claim, candidate.change)
+    for other in accepted:
+        if feature_key(other.family, other.claim, other.change) == key:
+            return True
+    claim = candidate.claim.strip().lower()
+    for row in read_rows(root):
+        if row.family == candidate.family and row.claim.strip().lower() == claim:
+            return True
+    return False
+
+
+def feature_key(family: str, claim: str, change: str | None) -> tuple[str, str, str]:
+    return (family.strip().lower(), claim.strip().lower(), (change or "").strip().lower())
+
+
+def proposal_problems(state: RunState, batch: ProposalBatch) -> list[str]:
+    """Operator, parent, duplicate, and K=4 shape checks for one planner batch."""
+
+    allowed = set(allowed_parents(state))
+    problems: list[str] = []
+    seen: set[tuple[str, str, str]] = set()
+    for candidate in batch.candidates:
+        if candidate.id == C00_ID and state.scale != "calibration":
+            problems.append(f"{candidate.id} is reserved for the LightGBM reference")
+        if candidate.operator != state.round_operator:
+            problems.append(
+                f"{candidate.id} operator is {candidate.operator}; "
+                f"this round requires {state.round_operator}"
+            )
+        if state.round_operator != "draft" and candidate.parent_id not in allowed:
+            problems.append(f"{candidate.id} parent is not one of {sorted(allowed)}")
+        key = feature_key(candidate.family, candidate.claim, candidate.change)
+        if key in seen:
+            problems.append(f"{candidate.id} repeats a proposal already in this batch")
+        seen.add(key)
+    if state.scale == "small" and state.round == 1 and state.round_operator == "draft":
+        if len(batch.candidates) < 8:
+            problems.append(
+                f"round 1 on a K=4 run must propose 8 drafts; got {len(batch.candidates)}"
+            )
+    if state.scale == "small" and state.round_operator == "improve":
+        for parent in allowed_parents(state):
+            if parent == C00_ID:
+                continue
+            count = sum(1 for candidate in batch.candidates if candidate.parent_id == parent)
+            if count < 3:
+                problems.append(f"propose 3 improvements of {parent}; found {count}")
+    return problems
+
+
+def allowed_parents(state: RunState) -> list[str]:
+    """Parents the planner may name. ``c00`` is included once the reference is on disk."""
+
+    if state.round_operator == "draft":
+        return []
+    if state.round_operator == "combine":
+        parents = combine_parents(state)
+    else:
+        previous = state.round - 1
+        kept = [
+            node
+            for node in state.nodes
+            if node.status == "kept" and node.search_round == previous and node.node_id != C00_ID
+        ]
+        if state.scale == "small":
+            parents = top_lineages(kept, limit=2)
+        else:
+            parents = [node.node_id for node in kept]
+    if archive_ready(state) and C00_ID not in parents:
+        parents = [C00_ID, *parents]
+    return parents
+
+
+def archive_ready(state: RunState) -> bool:
+    return any(
+        node.node_id == C00_ID and node.family == "lgbm_reference" for node in state.nodes
+    )
+
+
+def combine_parents(state: RunState) -> list[str]:
+    kept = [node for node in state.nodes if node.status == "kept" and node.node_id != C00_ID]
+    kept.sort(key=lambda node: (-node.search_round, -(node.delta_point or 0.0), node.node_id))
+    found: list[str] = []
+    for node in kept:
+        if node.node_id not in found:
+            found.append(node.node_id)
+        if len(found) == 2:
+            break
+    return found
+
+
+def top_lineages(nodes: list[NodeWork], limit: int) -> list[str]:
+    """Best kept node in each family, then the strongest families."""
+
+    best: dict[str, NodeWork] = {}
+    for node in nodes:
+        current = best.get(node.family)
+        if current is None or _lineage_rank(node) < _lineage_rank(current):
+            best[node.family] = node
+    ordered = sorted(best.values(), key=_lineage_rank)
+    return [node.node_id for node in ordered[:limit]]
+
+
+def unscored_final_r3(state: RunState) -> list[NodeWork]:
+    """R2 survivors that are about to be confirmed and have not run R3."""
+
+    return [
+        node
+        for node in state.nodes
+        if node.node_id != C00_ID
+        and node.search_round == state.round
+        and node.status in {"kept", "promoted"}
+        and node.rung != "R3"
+    ]
+
+
+def _lineage_rank(node: NodeWork) -> tuple[float, str]:
+    return (-(node.delta_point or 0.0), node.node_id)

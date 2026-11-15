@@ -41,6 +41,7 @@ Stage = Literal[
     "REPORT",
     "ESCALATE",
 ]
+Outcome = Literal["winner_promoted", "baseline_c00_promoted", "no_winner"]
 
 # Set on every MLflow run. parent_id is an empty string when the node has none.
 MLFLOW_TAG_KEYS: tuple[str, ...] = (
@@ -478,6 +479,8 @@ class RunState(BaseModel):
         default=False,
         description="An R2 survivor is taking the R3 pass before confirmation.",
     )
+    outcome: Outcome | None = None
+    escalated_from_stage: Stage | None = None
 
 
 class AgentRevision(BaseModel):
