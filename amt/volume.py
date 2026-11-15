@@ -40,6 +40,21 @@ def put(root: Path, local: Path, remote: str, *, overwrite: bool = False) -> Non
         raise VolumeError(f"upload to {remote} failed: {_detail(done)}")
 
 
+def get(root: Path, remote: str, local: Path) -> None:
+    """Download one volume file to ``local``."""
+
+    local.parent.mkdir(parents=True, exist_ok=True)
+    done = subprocess.run(
+        [databricks_bin(), "fs", "cp", cli_uri(remote), str(local)],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if done.returncode != 0:
+        raise VolumeError(f"download from {remote} failed: {_detail(done)}")
+
+
 def exists(root: Path, remote: str) -> bool:
     path = PurePosixPath(remote.removeprefix("dbfs:"))
     done = subprocess.run(

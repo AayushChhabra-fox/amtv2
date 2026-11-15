@@ -52,7 +52,9 @@ def test_resume_does_not_resubmit(tmp_path: Path, monkeypatch) -> None:
     assert FakeJobs(tmp_path).submit_count() == 1
     saved = json.loads((tmp_path / "runs" / "toy" / "state.json").read_text())
     assert saved["submitted_jobs"]["c01/R1/0"]["job_run_id"] == "fake-1"
-    model = (tmp_path / "candidates" / "c01" / "model.py").read_text(encoding="utf-8")
+    model = (tmp_path / "runs" / "toy" / "candidates" / "c01" / "model.py").read_text(
+        encoding="utf-8"
+    )
     assert "class Ranker" in model
     assert "hello_train" not in FakeJobs(tmp_path).submitted_jobs()
 

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from amt.config import load_settings
 from amt.confirm import ConfirmNotAllowed, confirmation_submissions
 from amt.orchestrator import request_confirmation
 
@@ -41,6 +42,8 @@ def test_orchestrator_plans_top_three_and_three_seeds() -> None:
     assert params["spec"] == "datasets/nfy_article_rerank"
     assert params["run_id"] == "run-1"
     assert params["git_sha"] == "abc123"
+    assert params["experiment_name"] == load_settings().experiment_for("nfy_article_rerank")
+    assert "/nfy_article_rerank" in params["experiment_name"]
     by_node = {item.candidate_id: item.family for item in planned}
     assert by_node["c1"] == "boost"
     assert by_node["c2"] == "neural"

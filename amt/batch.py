@@ -11,7 +11,8 @@ from pathlib import Path
 
 from amt import volume
 from amt.config import load_settings
-from amt.deploy import _git_sha, tree_hash
+from amt.deploy import _git_sha, freshness_token
+from amt.job_params import build_job_params
 from amt.jobs_backend import make_backend
 from amt.ladder import build_ladder_report, ladder_jobs
 from amt.noise import build_noise_report, round0_jobs
@@ -101,7 +102,7 @@ def collect_ladder(
 def submit_dataset(root: Path, spec: str) -> str:
     settings = load_settings(root)
     backend = make_backend(root)
-    token = f"build:{spec}:{tree_hash(root)[:12]}"
+    token = f"build:{spec}:{freshness_token(root, Path(spec).name)}"
     state = _load_state(root, f"build-{Path(spec).name}")
     cached = state.get(token)
     if cached and _run_is_reusable(root, str(cached)):
@@ -166,9 +167,9 @@ def _submit_matrix(
         by_rung.setdefault(job.rung, []).append(job)
     directory = root / "runs" / run_name
     directory.mkdir(parents=True, exist_ok=True)
-    tree = tree_hash(root)[:12]
+    stamp = freshness_token(root, spec_name)
     for rung, group in by_rung.items():
-        token = f"{run_name}:{rung}:{tree}"
+        token = f"{run_name}:{rung}:{stamp}"
         cached = state.get(token)
         if cached and _run_is_reusable(root, str(cached)):
             continue
@@ -186,7 +187,7 @@ def _submit_matrix(
         matrix.write_text(json.dumps(cells, indent=2) + "\n", encoding="utf-8")
         matrix_path = str(matrix)
         if settings.jobs_backend != "fake":
-            matrix_path = settings.volume("matrices", run_name, f"{tree}-{rung}.json")
+            matrix_path = settings.volume("matrices", run_name, f"{stamp}-{rung}.json")
             volume.put(root, matrix, matrix_path, overwrite=True)
         params = _base_params(
             settings,
@@ -218,34 +219,35 @@ def _base_params(
     matrix: str,
     git_sha: str,
 ) -> dict[str, str]:
-    return {
-        "candidate_id": "matrix",
-        "node_id": "matrix",
-        "parent_id": "",
-        "family": "matrix",
-        "operator": "draft",
-        "rung": rung,
-        "seed": "0",
-        "split": "search_val",
-        "batch": run_name,
-        "spec": spec_path,
-        "baseline": "",
-        "reference_score": "production",
-        "paired_reference": "production",
-        "model": "",
-        "catalog": settings.catalog,
-        "schema": settings.schema_name,
-        "dataset_dir": "",
-        "experiment_name": settings.experiment_for(brief_name),
-        "git_sha": git_sha,
-        "run_id": run_name,
-        "baseline_scores": "",
-        "write_scores": "",
-        "root": "",
-        "shared_cluster": "true" if settings.fixed_cluster else "",
-        "matrix": matrix,
-        "device": "cpu",
-    }
+    return build_job_params(
+        "train",
+        candidate_id="matrix",
+        node_id="matrix",
+        parent_id="",
+        family="matrix",
+        operator="draft",
+        rung=rung,
+        seed="0",
+        split="search_val",
+        batch=run_name,
+        spec=spec_path,
+        baseline="",
+        reference_score="production",
+        paired_reference="production",
+        model="",
+        catalog=settings.catalog,
+        schema=settings.schema_name,
+        dataset_dir="",
+        experiment_name=settings.experiment_for(brief_name),
+        git_sha=git_sha,
+        run_id=run_name,
+        baseline_scores="",
+        write_scores="",
+        root="",
+        shared_cluster="true" if settings.fixed_cluster else "",
+        matrix=matrix,
+        device="cpu",
+    )
 
 
 def _collect(root: Path, run_name: str) -> list[dict]:

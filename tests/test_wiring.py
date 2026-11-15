@@ -8,9 +8,17 @@ import pytest
 import yaml
 
 from amt.config import INTERNAL_ENV, effective_concurrency, load_settings
-from amt.deploy import DeployError, assert_fresh, tree_hash, write_deployed
+from amt.deploy import (
+    DeployError,
+    assert_fresh,
+    freshness_token,
+    harness_hash,
+    spec_hash,
+    write_deployed,
+)
 from amt.doctor import report as doctor_report
 from amt.final import FinalError, open_final
+from amt.job_params import lgbm_baseline_view, missing_baseline_message
 from amt.jobs_backend import (
     JOB_NAMES,
     FakeJobs,
@@ -21,7 +29,6 @@ from amt.jobs_backend import (
 from amt.pruner import decide
 from amt.schemas import Brief, load_brief
 from amt.snapshot import SnapshotError, upload_candidate
-from amt.submit import lgbm_baseline_view, missing_baseline_message
 from harness.interface import RankingFrame
 from harness.registry import pypi_libraries
 from harness.scores_io import align_scores, read_scores, write_scores
@@ -59,7 +66,7 @@ def test_fake_submit_rejects_undeclared_parameters(tmp_path: Path) -> None:
 
 def test_snapshot_layout_and_refusal_to_overwrite(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("AMT_JOBS_BACKEND", "fake")
-    model = tmp_path / "candidates" / "c00" / "model.py"
+    model = tmp_path / "runs" / "run" / "candidates" / "c00" / "model.py"
     model.parent.mkdir(parents=True)
     model.write_text("class Ranker: pass\n", encoding="utf-8")
     first = upload_candidate(tmp_path, "run", "c00", "abc")
@@ -74,14 +81,26 @@ def test_snapshot_layout_and_refusal_to_overwrite(tmp_path: Path, monkeypatch) -
 def test_deploy_freshness(tmp_path: Path) -> None:
     (tmp_path / "harness").mkdir()
     (tmp_path / "harness" / "note.txt").write_text("v1", encoding="utf-8")
+    for name in ("alpha", "beta"):
+        directory = tmp_path / "datasets" / name
+        directory.mkdir(parents=True)
+        (directory / "dataset.yaml").write_text(name, encoding="utf-8")
     write_deployed(tmp_path, git_sha="abc")
     assert_fresh(tmp_path)
+    recorded = json.loads((tmp_path / ".amt" / "deployed.json").read_text(encoding="utf-8"))
+    assert recorded["harness_hash"] == harness_hash(tmp_path)
+    assert recorded["spec_hashes"]["alpha"] == spec_hash(tmp_path, "alpha")
+    beta = freshness_token(tmp_path, "beta")
+    (tmp_path / "datasets" / "alpha" / "dataset.yaml").write_text("changed", encoding="utf-8")
+    assert_fresh(tmp_path)
+    assert freshness_token(tmp_path, "beta") == beta
+    assert freshness_token(tmp_path, "alpha") != beta
     (tmp_path / "harness" / "note.txt").write_text("v2", encoding="utf-8")
     with pytest.raises(DeployError, match="redeploy"):
         assert_fresh(tmp_path)
-    assert tree_hash(tmp_path) != json.loads(
+    assert harness_hash(tmp_path) != json.loads(
         (tmp_path / ".amt" / "deployed.json").read_text(encoding="utf-8")
-    )["harness_tree_hash"]
+    )["harness_hash"]
 
 
 def test_keyed_scores_fail_closed_on_partial_coverage(tmp_path: Path) -> None:
@@ -215,6 +234,9 @@ def test_volume_calls_use_dbfs_uris(tmp_path: Path, monkeypatch) -> None:
     assert calls[-2][2:] == ["mkdir", f"dbfs:{base}/matrices"]
     assert calls[-1][2:] == ["cp", str(tmp_path / "m.json"), f"dbfs:{base}/matrices/m.json",
                              "--overwrite"]
+    fetched = tmp_path / "out" / "m.json"
+    amt.volume.get(tmp_path, f"{base}/matrices/m.json", fetched)
+    assert calls[-1][2:] == ["cp", f"dbfs:{base}/matrices/m.json", str(fetched)]
     assert scores_exist(f"{base}/R1/seed=0.parquet", tmp_path)
     assert calls[-1][2:] == ["ls", f"dbfs:{base}/R1"]
     assert not scores_exist(f"{base}/R1/seed=1.parquet", tmp_path)
@@ -226,7 +248,7 @@ def test_volume_calls_use_dbfs_uris(tmp_path: Path, monkeypatch) -> None:
 
 def test_final_refuses_a_second_call(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("AMT_JOBS_BACKEND", "fake")
-    model = tmp_path / "candidates" / "c00" / "model.py"
+    model = tmp_path / "runs" / "demo" / "candidates" / "c00" / "model.py"
     model.parent.mkdir(parents=True)
     model.write_text("class Ranker: pass\n", encoding="utf-8")
     row = {
@@ -523,3 +545,110 @@ def test_cursor_api_key_counts_as_logged_in(monkeypatch) -> None:
     monkeypatch.setattr(agents.subprocess, "run", lambda *a, **k: pytest.fail("status ran"))
     monkeypatch.setenv("CURSOR_API_KEY", "key")
     assert agents.cursor_agent_logged_in()
+
+
+def test_cursor_retries_transient_errors_and_clears_the_lease(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import amt.agents as agents
+
+    seen: dict[str, dict] = {}
+    calls = {"n": 0}
+    sleeps: list[float] = []
+
+    class Proc:
+        def __init__(self) -> None:
+            calls["n"] += 1
+            self.n = calls["n"]
+            self.pid = 4242
+            self.returncode = 1
+
+        def communicate(self, timeout=None):
+            del timeout
+            lease = tmp_path / ".cursor" / "hooks" / "state" / "leases" / "4242.json"
+            assert lease.is_file()
+            if self.n < 3:
+                return "", "resource_exhausted: slow down"
+            self.returncode = 0
+            return '{"text": "ok"}', ""
+
+        def kill(self) -> None:
+            return None
+
+    def popen(cmd, **kwargs):
+        del cmd
+        seen["env"] = kwargs["env"]
+        return Proc()
+
+    monkeypatch.setattr(agents, "cursor_agent_bin", lambda: "cursor-agent")
+    monkeypatch.setattr(agents.subprocess, "Popen", popen)
+    monkeypatch.setattr(agents.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(agents.random, "uniform", lambda _low, _high: 0)
+    output, retries = agents._run_cursor(
+        "implementer",
+        tmp_path,
+        "hi",
+        model=None,
+        timeout_s=5,
+        run_id="r",
+        node_id="c00",
+        spec="toy",
+    )
+    assert output == {"text": "ok"}
+    assert retries == 2
+    assert calls["n"] == 3
+    assert sleeps == [5, 15]
+    env = seen["env"]
+    assert env["AMT_ROLE"] == "implementer"
+    assert env["AMT_RUN_ID"] == "r"
+    assert env["AMT_SPEC"] == "toy"
+    assert env["AMT_CANDIDATE_DIR"].endswith("runs/r/candidates/c00")
+    assert not (tmp_path / ".cursor" / "hooks" / "state" / "leases" / "4242.json").exists()
+
+
+def test_cursor_does_not_retry_a_hard_failure(tmp_path: Path, monkeypatch) -> None:
+    import amt.agents as agents
+
+    class Proc:
+        pid = 7
+        returncode = 1
+
+        def communicate(self, timeout=None):
+            del timeout
+            return "", "not logged in"
+
+        def kill(self) -> None:
+            return None
+
+    monkeypatch.setattr(agents, "cursor_agent_bin", lambda: "cursor-agent")
+    monkeypatch.setattr(agents.subprocess, "Popen", lambda *a, **k: Proc())
+    monkeypatch.setattr(agents.time, "sleep", lambda _seconds: pytest.fail("retried"))
+    with pytest.raises(agents.AgentCallError, match="not logged in") as caught:
+        agents._run_cursor(
+            "critic",
+            tmp_path,
+            "hi",
+            model=None,
+            timeout_s=5,
+            run_id="r",
+            node_id=None,
+            spec="",
+        )
+    assert caught.value.retries == 0
+
+
+def test_retry_count_is_logged(tmp_path: Path, monkeypatch) -> None:
+    import amt.agents as agents
+
+    monkeypatch.setenv("AMT_AGENT_BACKEND", "cursor")
+
+    def boom(*_args, **_kwargs):
+        raise agents.AgentCallError("connection lost", retries=2)
+
+    monkeypatch.setattr(agents, "_run_cursor", boom)
+    brief = Brief.model_validate({"name": "toy", "budget": {"total_dbu": 1}})
+    with pytest.raises(agents.AgentCallError):
+        agents.run_role("implementer", brief, tmp_path, "r", node_id="c00")
+    record = json.loads((tmp_path / "runs" / "r" / "agent_calls.jsonl").read_text(encoding="utf-8"))
+    assert record["ok"] is False
+    assert record["retries"] == 2

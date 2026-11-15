@@ -159,8 +159,8 @@ def test_calibration_is_one_lineage_and_is_not_repeated(
     assert "Status: pass" in text
     assert "planner" in text
     assert "c00: PASS" in text
-    assert (tmp_path / "candidates" / "c00" / "spec.md").is_file()
-    assert (tmp_path / "candidates" / "c00" / "review.md").is_file()
+    assert (tmp_path / "runs" / "cal" / "candidates" / "c00" / "spec.md").is_file()
+    assert (tmp_path / "runs" / "cal" / "candidates" / "c00" / "review.md").is_file()
     stats = json.loads((tmp_path / "runs" / "cal" / "agent_stats.json").read_text(encoding="utf-8"))
     assert stats["tokens"] == 11
     assert stats["bug_rate"] == 0
@@ -498,15 +498,14 @@ def test_a_failed_candidate_job_is_not_retried(tmp_path: Path) -> None:
     assert "infra_retries" not in state.submitted_jobs["c07/R3/0"]
 
 
-def test_proposal_cannot_reuse_another_runs_candidate_id(tmp_path: Path) -> None:
-    (tmp_path / "candidates" / "a00").mkdir(parents=True)
+def test_proposal_ids_are_scoped_to_the_run(tmp_path: Path) -> None:
+    (tmp_path / "runs" / "other" / "candidates" / "a00").mkdir(parents=True)
     state = _state()
     batch = ProposalBatch.model_validate(
         {"candidates": [_candidate("a00", "draft"), _candidate("a01", "draft")]}
     )
-    problems = _proposal_problems(state, batch, tmp_path)
-    assert any("a00 is already used" in problem for problem in problems)
-    assert not any("a01 is already used" in problem for problem in problems)
+    problems = _proposal_problems(state, batch)
+    assert not any("already used" in problem for problem in problems)
 
 
 def test_k4_plan_asks_for_eight_drafts_and_three_improvements() -> None:

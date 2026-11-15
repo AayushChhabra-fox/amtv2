@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from amt.config import load_settings
+from amt.job_params import build_job_params
 from amt.jobs_backend import make_backend
 from amt.ledger import read_rows
 from amt.signoff import _RESERVED_SIGNERS
@@ -104,34 +105,35 @@ def reproduce(root: Path, run_id: str, node_id: str) -> str:
     row = match[0]
     settings = load_settings(root)
     model = upload_candidate(root, run_id, node_id, row.git_sha, settings=settings)
-    params = {
-        "candidate_id": node_id,
-        "node_id": node_id,
-        "parent_id": row.parent_id or "",
-        "family": row.family,
-        "operator": row.operator,
-        "rung": "R3",
-        "seed": str(row.seed),
-        "split": "search_val",
-        "batch": f"reproduce-{run_id}",
-        "spec": "",
-        "baseline": "",
-        "reference_score": "production",
-        "paired_reference": "production",
-        "model": model,
-        "catalog": settings.catalog,
-        "schema": settings.schema_name,
-        "dataset_dir": "",
-        "experiment_name": settings.experiment_for(run_id),
-        "git_sha": row.git_sha,
-        "run_id": f"reproduce-{run_id}",
-        "baseline_scores": "",
-        "write_scores": "",
-        "root": "",
-        "shared_cluster": "true" if settings.fixed_cluster else "",
-        "matrix": "",
-        "device": "cpu",
-    }
+    params = build_job_params(
+        "train",
+        candidate_id=node_id,
+        node_id=node_id,
+        parent_id=row.parent_id or "",
+        family=row.family,
+        operator=row.operator,
+        rung="R3",
+        seed=row.seed,
+        split="search_val",
+        batch=f"reproduce-{run_id}",
+        spec="",
+        baseline="",
+        reference_score="production",
+        paired_reference="production",
+        model=model,
+        catalog=settings.catalog,
+        schema=settings.schema_name,
+        dataset_dir="",
+        experiment_name=settings.experiment_for(run_id),
+        git_sha=row.git_sha,
+        run_id=f"reproduce-{run_id}",
+        baseline_scores="",
+        write_scores="",
+        root="",
+        shared_cluster="true" if settings.fixed_cluster else "",
+        matrix="",
+        device="cpu",
+    )
     state_path = root / "runs" / run_id / "state.json"
     if state_path.is_file():
         payload = json.loads(state_path.read_text(encoding="utf-8"))
@@ -173,31 +175,32 @@ def _holdout_params(
     family: str = "",
 ) -> dict[str, str]:
     settings = load_settings(root)
-    return {
-        "candidate_id": candidate_id or row.node_id,
-        "seed": str(row.seed),
-        "batch": f"final-{row.run_id}",
-        "spec": "",
-        "baseline": baseline,
-        "reference_score": "production",
-        "model": model,
-        "catalog": settings.catalog,
-        "schema": settings.schema_name,
-        "dataset_dir": "",
-        "experiment_name": settings.experiment_for(row.run_id),
-        "git_sha": row.git_sha,
-        "family": family or row.family,
-        "run_id": row.run_id,
-        "node_id": candidate_id or row.node_id,
-        "parent_id": "",
-        "operator": "draft",
-        "paired_reference": "production",
-        "baseline_scores": "",
-        "confirm_token": token,
-        "root": "",
-        "shared_cluster": "true" if settings.fixed_cluster else "",
-        "device": "cpu",
-    }
+    return build_job_params(
+        "final_holdout",
+        candidate_id=candidate_id or row.node_id,
+        seed=row.seed,
+        batch=f"final-{row.run_id}",
+        spec="",
+        baseline=baseline,
+        reference_score="production",
+        model=model,
+        catalog=settings.catalog,
+        schema=settings.schema_name,
+        dataset_dir="",
+        experiment_name=settings.experiment_for(row.run_id),
+        git_sha=row.git_sha,
+        family=family or row.family,
+        run_id=row.run_id,
+        node_id=candidate_id or row.node_id,
+        parent_id="",
+        operator="draft",
+        paired_reference="production",
+        baseline_scores="",
+        confirm_token=token,
+        root="",
+        shared_cluster="true" if settings.fixed_cluster else "",
+        device="cpu",
+    )
 
 
 def _select_interval(rows, node_id: str) -> tuple[float, float] | None:

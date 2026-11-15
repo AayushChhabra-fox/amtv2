@@ -1,5 +1,7 @@
 import json
+import os
 import subprocess
+import time
 from pathlib import Path
 
 HOOK = Path(__file__).resolve().parents[1] / ".cursor" / "hooks" / "implementer_scope.py"
@@ -47,7 +49,9 @@ def test_implementer_write_outside_candidates_is_denied(tmp_path: Path) -> None:
         {
             "hook_event_name": "preToolUse",
             "tool_name": "Write",
-            "tool_input": {"path": str(tmp_path / "candidates" / "c00" / "model.py")},
+            "tool_input": {
+                "path": str(tmp_path / "runs" / "r1" / "candidates" / "c00" / "model.py")
+            },
             "workspace_roots": [str(tmp_path)],
             "cwd": str(tmp_path),
         },
@@ -103,7 +107,7 @@ def test_reviewer_cannot_write_protected_paths(tmp_path: Path) -> None:
         {
             "hook_event_name": "preToolUse",
             "tool_name": "Write",
-            "tool_input": {"path": "candidates/c00/review.md"},
+            "tool_input": {"path": "runs/r1/candidates/c00/review.md"},
             "workspace_roots": [str(tmp_path)],
         },
     )
@@ -145,3 +149,154 @@ def test_subagent_stop_clears_the_block(tmp_path: Path) -> None:
         },
     )
     assert decision["permission"] == "allow"
+
+
+def test_global_candidates_path_is_denied(tmp_path: Path) -> None:
+    _run(
+        tmp_path,
+        {
+            "hook_event_name": "subagentStart",
+            "subagent_type": "implementer",
+            "subagent_id": "impl-old",
+        },
+    )
+    decision = _run(
+        tmp_path,
+        {
+            "hook_event_name": "preToolUse",
+            "tool_name": "Write",
+            "tool_input": {"path": "candidates/c00/model.py"},
+            "workspace_roots": [str(tmp_path)],
+        },
+    )
+    assert decision["permission"] == "deny"
+
+
+def test_dead_or_expired_implementer_does_not_lock_the_workspace(tmp_path: Path) -> None:
+    state = tmp_path / ".cursor" / "hooks" / "state" / "active_implementers.json"
+    state.parent.mkdir(parents=True)
+    state.write_text(
+        json.dumps(
+            {
+                "agents": {
+                    "dead": {"pid": 2_147_483_646, "ts": time.time(), "role": "implementer"},
+                    "old": {"pid": os.getpid(), "ts": 0, "role": "implementer"},
+                },
+                "ids": ["legacy"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    decision = _run(
+        tmp_path,
+        {
+            "hook_event_name": "preToolUse",
+            "tool_name": "Write",
+            "tool_input": {"path": "harness/train.py"},
+            "workspace_roots": [str(tmp_path)],
+        },
+    )
+    assert decision["permission"] == "allow"
+    payload = json.loads(state.read_text(encoding="utf-8"))
+    assert payload == {"agents": {}}
+
+
+def test_role_env_limits_writes_to_one_candidate_dir(tmp_path: Path) -> None:
+    allowed = tmp_path / "runs" / "r" / "candidates" / "c00" / "model.py"
+    denied = tmp_path / "runs" / "r" / "candidates" / "c01" / "model.py"
+    env = {
+        "AMT_ROLE": "implementer",
+        "AMT_RUN_ID": "r",
+        "AMT_CANDIDATE_DIR": str(allowed.parent),
+        "AMT_SPEC": "toy",
+    }
+    ok = _run(
+        tmp_path,
+        {
+            "hook_event_name": "preToolUse",
+            "tool_name": "Write",
+            "tool_input": {"path": str(allowed)},
+            "workspace_roots": [str(tmp_path)],
+        },
+        env,
+    )
+    blocked = _run(
+        tmp_path,
+        {
+            "hook_event_name": "preToolUse",
+            "tool_name": "Write",
+            "tool_input": {"path": str(denied)},
+            "workspace_roots": [str(tmp_path)],
+        },
+        env,
+    )
+    assert ok["permission"] == "allow"
+    assert blocked["permission"] == "deny"
+
+
+def test_ancestor_lease_limits_writes_when_env_is_missing(tmp_path: Path) -> None:
+    directory = tmp_path / "runs" / "r" / "candidates" / "c00"
+    lease = tmp_path / ".cursor" / "hooks" / "state" / "leases" / f"{os.getpid()}.json"
+    lease.parent.mkdir(parents=True)
+    lease.write_text(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "role": "implementer",
+                "run_id": "r",
+                "candidate_dir": str(directory),
+                "spec": "toy",
+                "ts": time.time(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    ok = _run(
+        tmp_path,
+        {
+            "hook_event_name": "preToolUse",
+            "tool_name": "Write",
+            "tool_input": {"path": str(directory / "model.py")},
+            "workspace_roots": [str(tmp_path)],
+        },
+    )
+    blocked = _run(
+        tmp_path,
+        {
+            "hook_event_name": "preToolUse",
+            "tool_name": "Write",
+            "tool_input": {"path": "amt/agents.py"},
+            "workspace_roots": [str(tmp_path)],
+        },
+    )
+    assert ok["permission"] == "allow"
+    assert blocked["permission"] == "deny"
+
+
+def test_dead_ancestor_lease_does_not_lock(tmp_path: Path) -> None:
+    lease = tmp_path / ".cursor" / "hooks" / "state" / "leases" / f"{os.getpid()}.json"
+    lease.parent.mkdir(parents=True)
+    lease.write_text(
+        json.dumps(
+            {
+                "pid": 2_147_483_646,
+                "role": "implementer",
+                "run_id": "r",
+                "candidate_dir": str(tmp_path / "runs" / "r" / "candidates" / "c00"),
+                "spec": "toy",
+                "ts": time.time(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    decision = _run(
+        tmp_path,
+        {
+            "hook_event_name": "preToolUse",
+            "tool_name": "Write",
+            "tool_input": {"path": "harness/train.py"},
+            "workspace_roots": [str(tmp_path)],
+        },
+    )
+    assert decision["permission"] == "allow"
+    assert not lease.exists()

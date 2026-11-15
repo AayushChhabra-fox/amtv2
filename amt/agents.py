@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import shutil
 import subprocess
 import time
@@ -31,7 +32,20 @@ from pathlib import Path
 import yaml
 
 from amt.context import build_context
+from amt.paths import candidate_dir
 from amt.schemas import Brief, BriefCandidate, Candidate, Verdict
+
+# Three tries. A transient failure waits 5s, then 15s. 45s is the next step of the same series.
+_RETRY_BACKOFF_S = (5, 15, 45)
+_TRANSIENT_MARKERS = ("resource_exhausted", "[internal]", "connection lost", "timed out", "timeout")
+
+
+class AgentCallError(RuntimeError):
+    """A cursor-agent call failed. ``retries`` is how many extra tries already ran."""
+
+    def __init__(self, message: str, *, retries: int = 0) -> None:
+        super().__init__(message)
+        self.retries = retries
 
 MODEL_PY = '''\
 """Contract-shaped ranker. Ridge on numeric feat__ columns; categories are ignored."""
@@ -239,6 +253,11 @@ def run_role(
             )
             started = time.perf_counter()
     reply_path: str | None = None
+    retries = 0
+    spec_name = ""
+    resolved_spec = brief.resolved_dataset_spec()
+    if resolved_spec:
+        spec_name = Path(resolved_spec).name
     try:
         if mode == "cursor" and role == "planner" and not cursor_agent_web_tools_available():
             raise RuntimeError(
@@ -246,8 +265,15 @@ def run_role(
                 "the CLI help text does not offer it"
             )
         if mode == "cursor":
-            output = _run_cursor(
-                role, root, prompt, model=chosen_model, timeout_s=timeout
+            output, retries = _run_cursor(
+                role,
+                root,
+                prompt,
+                model=chosen_model,
+                timeout_s=timeout,
+                run_id=run_id,
+                node_id=node_id,
+                spec=spec_name,
             )
         elif mode == "fake":
             output = _run_fake(role, root, run_id, node_id=node_id)
@@ -270,6 +296,7 @@ def run_role(
                 "tokens": None,
                 "references_count": _references_count(role, None),
                 "reply_path": reply_path,
+                "retries": getattr(exc, "retries", retries),
                 "error": str(exc),
             },
         )
@@ -285,6 +312,7 @@ def run_role(
             "tokens": tokens,
             "references_count": _references_count(role, output),
             "reply_path": reply_path,
+            "retries": retries,
         },
     )
     return output
@@ -364,6 +392,87 @@ def _token_count(output: dict) -> int | None:
     return int(total) if total is not None else None
 
 
+def _is_transient(detail: str) -> bool:
+    text = detail.lower()
+    return any(marker in text for marker in _TRANSIENT_MARKERS)
+
+
+def _lease_path(root: Path, pid: int) -> Path:
+    return root / ".cursor" / "hooks" / "state" / "leases" / f"{pid}.json"
+
+
+def _write_lease(
+    root: Path, pid: int, role: str, run_id: str, directory: str, spec: str
+) -> Path:
+    path = _lease_path(root, pid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "pid": pid,
+        "role": role,
+        "run_id": run_id,
+        "candidate_dir": directory,
+        "spec": spec,
+        "ts": time.time(),
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _agent_env(role: str, run_id: str, directory: str, spec: str) -> dict[str, str]:
+    env = os.environ.copy()
+    env["AMT_ROLE"] = role
+    env["AMT_RUN_ID"] = run_id
+    if directory:
+        env["AMT_CANDIDATE_DIR"] = directory
+    if spec:
+        env["AMT_SPEC"] = spec
+    return env
+
+
+def _run_cursor_once(
+    command: list[str],
+    *,
+    root: Path,
+    role: str,
+    run_id: str,
+    directory: str,
+    spec: str,
+    timeout_s: int,
+    env: dict[str, str],
+) -> dict:
+    proc = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=root,
+        env=env,
+    )
+    lease = None
+    try:
+        if role in {"implementer", "reviewer"}:
+            lease = _write_lease(root, proc.pid, role, run_id, directory, spec)
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired as exc:
+            proc.kill()
+            proc.communicate()
+            raise AgentCallError(f"cursor-agent timed out after {timeout_s}s") from exc
+        if proc.returncode != 0:
+            detail = (stderr or stdout or "cursor-agent failed").strip()
+            raise AgentCallError(detail)
+        try:
+            payload = json.loads(stdout)
+        except json.JSONDecodeError:
+            payload = {"text": stdout}
+        if not isinstance(payload, dict):
+            return {"text": stdout}
+        return payload
+    finally:
+        if lease is not None:
+            lease.unlink(missing_ok=True)
+
+
 def _run_cursor(
     role: str,
     root: Path,
@@ -371,7 +480,10 @@ def _run_cursor(
     *,
     model: str | None,
     timeout_s: int,
-) -> dict:
+    run_id: str,
+    node_id: str | None,
+    spec: str,
+) -> tuple[dict, int]:
     binary = cursor_agent_bin()
     if binary is None:
         raise RuntimeError("cursor-agent is not on PATH")
@@ -389,37 +501,33 @@ def _run_cursor(
         command.extend(["--model", model])
     if role in {"planner", "critic"}:
         command.extend(["--mode", "ask"])
-    if role in {"implementer", "reviewer"}:
-        _set_active_role(root, role)
     command.append(prompt)
-    try:
-        completed = subprocess.run(
-            command,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            cwd=root,
-        )
-    finally:
-        if role in {"implementer", "reviewer"}:
-            _set_active_role(root, None)
-    if completed.returncode != 0:
-        detail = completed.stderr.strip() or completed.stdout.strip() or "cursor-agent failed"
-        raise RuntimeError(detail)
-    try:
-        return json.loads(completed.stdout)
-    except json.JSONDecodeError:
-        return {"text": completed.stdout}
-
-
-def _set_active_role(root: Path, role: str | None) -> None:
-    path = root / ".cursor" / "hooks" / "state" / "active_role"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if role is None:
-        path.unlink(missing_ok=True)
-    else:
-        path.write_text(role)
+    directory = ""
+    if node_id:
+        directory = str(candidate_dir(root, run_id, node_id))
+    env = _agent_env(role, run_id, directory, spec)
+    last = "cursor-agent failed"
+    for attempt, delay in enumerate(_RETRY_BACKOFF_S):
+        try:
+            output = _run_cursor_once(
+                command,
+                root=root,
+                role=role,
+                run_id=run_id,
+                directory=directory,
+                spec=spec,
+                timeout_s=timeout_s,
+                env=env,
+            )
+        except AgentCallError as exc:
+            last = str(exc)
+            transient = _is_transient(last)
+            if not transient or attempt + 1 == len(_RETRY_BACKOFF_S):
+                raise AgentCallError(last, retries=attempt) from exc
+            time.sleep(delay + random.uniform(0, delay * 0.2))
+            continue
+        return output, attempt
+    raise AgentCallError(last, retries=len(_RETRY_BACKOFF_S) - 1)
 
 
 def _run_fake(role: str, root: Path, run_id: str, *, node_id: str | None) -> dict:
@@ -447,21 +555,18 @@ def _run_fake(role: str, root: Path, run_id: str, *, node_id: str | None) -> dic
         raise RuntimeError(str(call["error"]))
     files = call.get("files") or {}
     if isinstance(files, dict) and files:
-        _write_scripted_files(root, files, role)
+        _write_scripted_files(root, run_id, files)
     elif role == "implementer" and target:
-        _set_active_role(root, "implementer")
-        try:
-            _write_default_model(root, target)
-        finally:
-            _set_active_role(root, None)
+        _write_default_model(root, run_id, target)
     elif role == "reviewer" and target:
-        _set_active_role(root, "reviewer")
-        try:
-            raw_verdict = str((call.get("output") or {}).get("verdict", ""))
-            verdict = "FAIL" if raw_verdict.upper() == "FAIL" else "PASS"
-            _write_text(root, f"candidates/{target}/review.md", f"# review\n\nVERDICT: {verdict}\n")
-        finally:
-            _set_active_role(root, None)
+        raw_verdict = str((call.get("output") or {}).get("verdict", ""))
+        verdict = "FAIL" if raw_verdict.upper() == "FAIL" else "PASS"
+        _write_text(
+            root,
+            run_id,
+            f"runs/{run_id}/candidates/{target}/review.md",
+            f"# review\n\nVERDICT: {verdict}\n",
+        )
     output = call.get("output")
     if output is None:
         output = {}
@@ -473,34 +578,37 @@ def _run_fake(role: str, root: Path, run_id: str, *, node_id: str | None) -> dic
     return output
 
 
-def _write_scripted_files(root: Path, files: dict, role: str) -> None:
-    if role in {"implementer", "reviewer"}:
-        _set_active_role(root, role)
-    try:
-        for relative, contents in files.items():
-            _write_text(root, str(relative), str(contents))
-    finally:
-        if role in {"implementer", "reviewer"}:
-            _set_active_role(root, None)
+def _write_scripted_files(root: Path, run_id: str, files: dict) -> None:
+    for relative, contents in files.items():
+        _write_text(root, run_id, str(relative), str(contents))
 
 
-def _write_text(root: Path, relative: str, contents: str) -> None:
-    path = _candidate_path(root, relative)
+def _write_text(root: Path, run_id: str, relative: str, contents: str) -> None:
+    path = _candidate_path(root, run_id, relative)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(contents, encoding="utf-8")
 
 
-def _candidate_path(root: Path, relative: str) -> Path:
+def _candidate_path(root: Path, run_id: str, relative: str) -> Path:
     rel = Path(relative)
-    if rel.is_absolute() or ".." in rel.parts or len(rel.parts) < 3 or rel.parts[0] != "candidates":
-        raise RuntimeError(f"refusing agent write outside candidates/<id>/: {relative}")
-    if rel.parts[1].startswith("."):
-        raise RuntimeError(f"refusing agent write outside candidates/<id>/: {relative}")
+    parts = rel.parts
+    allowed = f"runs/{run_id}/candidates/<id>/"
+    if (
+        rel.is_absolute()
+        or ".." in parts
+        or len(parts) < 5
+        or parts[0] != "runs"
+        or parts[1] != run_id
+        or parts[2] != "candidates"
+        or not parts[3]
+        or parts[3].startswith(".")
+    ):
+        raise RuntimeError(f"refusing agent write outside {allowed}: {relative}")
     return root / rel
 
 
-def _write_default_model(root: Path, node_id: str) -> None:
-    directory = root / "candidates" / node_id
+def _write_default_model(root: Path, run_id: str, node_id: str) -> None:
+    directory = candidate_dir(root, run_id, node_id)
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "model.py").write_text(MODEL_PY, encoding="utf-8")
 
@@ -534,28 +642,21 @@ def _run_stub(role: str, brief: Brief, root: Path, run_id: str) -> dict:
         path.write_text(verdict.model_dump_json(indent=2) + "\n")
         return {"verdicts": [verdict.model_dump()]}
     if role == "implementer":
-        _set_active_role(root, "implementer")
-        try:
-            _write_candidate(root, spec.id, spec)
-        finally:
-            _set_active_role(root, None)
-        return {"wrote": f"candidates/{spec.id}/model.py"}
+        _write_candidate(root, run_id, spec.id, spec)
+        return {"wrote": f"runs/{run_id}/candidates/{spec.id}/model.py"}
     if role == "reviewer":
-        _set_active_role(root, "reviewer")
-        try:
-            _write_text(
-                root,
-                f"candidates/{spec.id}/review.md",
-                "# review\n\nThe claimed Ranker is present.\n\nVERDICT: PASS\n",
-            )
-        finally:
-            _set_active_role(root, None)
+        _write_text(
+            root,
+            run_id,
+            f"runs/{run_id}/candidates/{spec.id}/review.md",
+            "# review\n\nThe claimed Ranker is present.\n\nVERDICT: PASS\n",
+        )
         return {"verdict": "PASS"}
     raise ValueError(f"unknown role {role}")
 
 
-def _write_candidate(root: Path, candidate_id: str, candidate: BriefCandidate) -> None:
-    directory = root / "candidates" / candidate_id
+def _write_candidate(root: Path, run_id: str, candidate_id: str, candidate: BriefCandidate) -> None:
+    directory = candidate_dir(root, run_id, candidate_id)
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "model.py").write_text(MODEL_PY)
     (directory / "candidate.yaml").write_text(

@@ -16,6 +16,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from amt.ledger import read_rows
+from amt.paths import candidate_dir
 from amt.schemas import Brief, RunState, load_brief
 from amt.signoff import (
     SignoffError,
@@ -640,7 +641,7 @@ def _prompts(root: Path) -> tuple[list[PromptRecord], list[str]]:
 def _specs(root: Path, state: RunState) -> list[str]:
     found: list[str] = []
     for node in state.nodes:
-        path = root / "candidates" / node.node_id / "spec.md"
+        path = candidate_dir(root, state.run_id, node.node_id) / "spec.md"
         if path.is_file():
             found.append(_relative(root, path))
     return found
@@ -649,7 +650,7 @@ def _specs(root: Path, state: RunState) -> list[str]:
 def _reviews(root: Path, state: RunState) -> list[ReviewRecord]:
     records: list[ReviewRecord] = []
     for node in state.nodes:
-        path = root / "candidates" / node.node_id / "review.md"
+        path = candidate_dir(root, state.run_id, node.node_id) / "review.md"
         if not path.is_file():
             records.append(ReviewRecord(node_id=node.node_id, path="", verdict=None))
             continue

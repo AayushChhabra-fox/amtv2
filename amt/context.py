@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 from amt.ledger import read_annotations, read_rows
+from amt.paths import candidate_dir
 from amt.schemas import Brief, LedgerRow, load_brief
 
 _NEWEST = 12
@@ -52,7 +53,7 @@ def build_context(
         "",
         "Write scope: none; reply only."
         if role in {"planner", "critic"}
-        else "Write scope: candidates/<id>/ only.",
+        else f"Write scope: runs/{run_id or '<run_id>'}/candidates/<id>/ only.",
         "Do not edit harness/, amt/, briefs/, datasets/, databricks.yml, or resources/.",
         "",
         _ledger_block(root, brief, run_id),
@@ -60,7 +61,7 @@ def build_context(
     if operator in {"draft", "improve"}:
         lines.extend(["", _sibling_block(root, run_id, node_id, operator)])
     if operator == "debug":
-        lines.extend(["", _fix_chain(root, node_id)])
+        lines.extend(["", _fix_chain(root, run_id, node_id)])
     if operator:
         lines.extend(["", f"Operator for this call: {operator}"])
     if parent_ids:
@@ -77,10 +78,13 @@ def build_context(
                 "No ensembles and no heavy tuning on a draft.",
             ]
         )
-    if role == "planner":
-        used = sorted(path.name for path in (root / "candidates").glob("*") if path.is_dir())
+    if role == "planner" and run_id:
+        directory = root / "runs" / run_id / "candidates"
+        used = []
+        if directory.is_dir():
+            used = sorted(path.name for path in directory.glob("*") if path.is_dir())
         if used:
-            lines.extend(["", "Candidate ids already taken (do not reuse): " + ", ".join(used)])
+            lines.extend(["", "Candidate ids already used in this run: " + ", ".join(used)])
         lines.extend(
             [
                 "",
@@ -90,7 +94,7 @@ def build_context(
             ]
         )
     lines.extend(["", "Files:"])
-    for path in inputs or _default_inputs(role, root, brief, node_id):
+    for path in inputs or _default_inputs(role, root, brief, node_id, run_id):
         lines.append(f"  read {path}")
     if output_path and role in {"planner", "critic"}:
         lines.append(f"  (the orchestrator saves your reply to {output_path})")
@@ -225,13 +229,13 @@ def _siblings(root: Path, run_id: str | None, node_id: str | None) -> list[str]:
     return found
 
 
-def _debug_log(root: Path, node_id: str | None) -> Path:
+def _debug_log(root: Path, run_id: str | None, node_id: str | None) -> Path:
     name = node_id or "unknown"
-    return root / "candidates" / name / "debug_log.md"
+    return candidate_dir(root, run_id or "unknown", name) / "debug_log.md"
 
 
-def _fix_chain(root: Path, node_id: str | None) -> str:
-    path = _debug_log(root, node_id)
+def _fix_chain(root: Path, run_id: str | None, node_id: str | None) -> str:
+    path = _debug_log(root, run_id, node_id)
     header = f"Fix chain for {node_id or 'this node'} ({path.as_posix()}):"
     if not path.is_file():
         return header + "\n  (no attempts yet)"
@@ -239,7 +243,9 @@ def _fix_chain(root: Path, node_id: str | None) -> str:
     return header + "\n" + body
 
 
-def _default_inputs(role: str, root: Path, brief: Brief, node_id: str | None) -> list[str]:
+def _default_inputs(
+    role: str, root: Path, brief: Brief, node_id: str | None, run_id: str | None
+) -> list[str]:
     schema = root / "amt" / "json_schemas"
     paths = []
     if role == "planner":
@@ -249,9 +255,9 @@ def _default_inputs(role: str, root: Path, brief: Brief, node_id: str | None) ->
     elif role == "implementer":
         paths.append(str(root / "harness" / "interface.py"))
         if node_id:
-            paths.append(str(root / "candidates" / node_id / "spec.md"))
+            paths.append(str(candidate_dir(root, run_id or "unknown", node_id) / "spec.md"))
     elif role == "reviewer" and node_id:
-        candidate = root / "candidates" / node_id
+        candidate = candidate_dir(root, run_id or "unknown", node_id)
         paths.append(str(candidate / "spec.md"))
         paths.append(str(candidate / "model.py"))
     spec = brief.resolved_dataset_spec()
@@ -278,6 +284,7 @@ def _output_contract(role: str) -> str:
         return "Write review.md ending with a line VERDICT: PASS or VERDICT: FAIL."
     if role == "implementer":
         return (
-            "Write model.py implementing fit, score, save, and load. Stay inside candidates/<id>/."
+            "Write model.py implementing fit, score, save, and load. "
+            "Stay inside runs/<run_id>/candidates/<id>/."
         )
     return "Follow the role prompt."

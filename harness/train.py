@@ -491,7 +491,7 @@ def _execute(args: argparse.Namespace) -> None:
     model_path = (
         Path(args.model)
         if args.model
-        else project_root() / "candidates" / args.candidate_id / "model.py"
+        else project_root() / "runs" / args.run_id / "candidates" / args.candidate_id / "model.py"
     )
     requirements_sha = ""
     install_s = 0.0

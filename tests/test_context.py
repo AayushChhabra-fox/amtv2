@@ -50,7 +50,7 @@ def test_context_keeps_newest_nodes_siblings_and_the_fix_chain(tmp_path: Path) -
     run = tmp_path / "runs" / "r"
     run.mkdir(parents=True)
     (run / "state.json").write_text(json.dumps(state), encoding="utf-8")
-    log = tmp_path / "candidates" / "n12" / "debug_log.md"
+    log = tmp_path / "runs" / "r" / "candidates" / "n12" / "debug_log.md"
     log.parent.mkdir(parents=True)
     log.write_text("# debug log\n\n## attempt 1\n\nboom\n", encoding="utf-8")
     brief = Brief.model_validate({"name": "nfy", "budget": {"total_dbu": 10}, "k": 2})
@@ -93,9 +93,14 @@ def test_planner_and_critic_are_told_to_reply_not_write(tmp_path: Path) -> None:
         assert "do not write or edit any file" in text
         assert "candidates/<id>/ only" not in text
     implementer = build_context(
-        "implementer", brief, tmp_path, run_id="r", output_path="candidates/c1/model.py"
+        "implementer",
+        brief,
+        tmp_path,
+        run_id="r",
+        output_path="runs/r/candidates/c1/model.py",
     )
-    assert "write candidates/c1/model.py" in implementer
+    assert "write runs/r/candidates/c1/model.py" in implementer
+    assert "runs/r/candidates/<id>/" in implementer
 
 
 def test_annotated_crash_is_not_shown_as_a_failed_node(tmp_path: Path) -> None:

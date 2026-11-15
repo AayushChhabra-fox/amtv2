@@ -1,9 +1,11 @@
 """Bundle deploy and the harness freshness check.
 
-``.amt/deployed.json`` records the git SHA and a hash of ``harness/``,
-``datasets/``, and ``resources/``. A Databricks submit refuses to run when
-that hash no longer matches the tree, so a laptop edit cannot score against
-a stale workspace copy.
+``.amt/deployed.json`` records the git SHA, a hash of ``harness/``,
+``resources/``, and ``amt/``, and a hash per ``datasets/<spec>/`` directory.
+A Databricks submit refuses to run when the harness hash no longer matches,
+so a laptop edit of training code cannot score against a stale workspace
+copy. Editing one dataset spec does not change the harness hash or another
+spec's freshness token.
 """
 
 from __future__ import annotations
@@ -17,16 +19,16 @@ from pathlib import Path
 from amt.config import Settings, load_settings
 from amt.jobs_backend import databricks_bin
 
-HASH_ROOTS = ("harness", "datasets", "resources")
+HARNESS_ROOTS = ("harness", "resources", "amt")
 
 
 class DeployError(RuntimeError):
     """The workspace copy is missing or older than the local tree."""
 
 
-def tree_hash(root: Path) -> str:
+def _hash_files(root: Path, folders: tuple[str, ...]) -> str:
     digest = hashlib.sha256()
-    for folder in HASH_ROOTS:
+    for folder in folders:
         base = root / folder
         if not base.is_dir():
             continue
@@ -43,6 +45,38 @@ def tree_hash(root: Path) -> str:
     return digest.hexdigest()
 
 
+def harness_hash(root: Path) -> str:
+    """Hash of the code a deploy ships, excluding dataset specs."""
+
+    return _hash_files(root, HARNESS_ROOTS)
+
+
+def spec_hash(root: Path, spec_name: str) -> str:
+    """Hash of one ``datasets/<spec>/`` tree."""
+
+    name = Path(spec_name).name
+    if not name or name in {".", ".."}:
+        return _hash_files(root, ())
+    return _hash_files(root, (f"datasets/{name}",))
+
+
+def spec_hashes(root: Path) -> dict[str, str]:
+    base = root / "datasets"
+    if not base.is_dir():
+        return {}
+    found: dict[str, str] = {}
+    for path in sorted(base.iterdir()):
+        if path.is_dir() and not path.name.startswith("."):
+            found[path.name] = spec_hash(root, path.name)
+    return found
+
+
+def freshness_token(root: Path, spec_name: str) -> str:
+    """Short token for one spec. Another spec's edit does not change it."""
+
+    return f"{harness_hash(root)[:12]}-{spec_hash(root, spec_name)[:12]}"
+
+
 def deployed_path(root: Path) -> Path:
     return root / ".amt" / "deployed.json"
 
@@ -55,18 +89,25 @@ def read_deployed(root: Path) -> dict:
 
 
 def assert_fresh(root: Path) -> None:
-    """Raise when the local harness tree is not what the last deploy shipped."""
+    """Raise when the local harness tree is not what the last deploy shipped.
+
+    Dataset specs are tracked separately. A change under ``datasets/<spec>/``
+    does not by itself make this deploy stale.
+    """
 
     recorded = read_deployed(root)
-    current = tree_hash(root)
-    if recorded.get("harness_tree_hash") != current:
+    if recorded.get("harness_hash") != harness_hash(root):
         raise DeployError("redeploy: harness changed since deploy")
 
 
 def write_deployed(root: Path, *, git_sha: str) -> Path:
     path = deployed_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"git_sha": git_sha, "harness_tree_hash": tree_hash(root)}
+    payload = {
+        "git_sha": git_sha,
+        "harness_hash": harness_hash(root),
+        "spec_hashes": spec_hashes(root),
+    }
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return path
 

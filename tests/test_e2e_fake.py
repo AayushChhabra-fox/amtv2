@@ -51,7 +51,7 @@ def test_fake_backend_runs_deploy_noise_search_and_final(tmp_path: Path, monkeyp
     assert "confirm" in jobs
     assert audit_rows(tmp_path, "e2e") == []
 
-    model = tmp_path / "candidates" / "c03" / "model.py"
+    model = tmp_path / "runs" / "e2e" / "candidates" / "c03" / "model.py"
     assert model.is_file()
     path = open_final(tmp_path, "e2e", "Ada Lovelace")
     assert "Final holdout" in path.read_text(encoding="utf-8")

@@ -13,6 +13,7 @@ from pathlib import Path
 
 from amt import volume
 from amt.config import Settings, load_settings
+from amt.paths import candidate_dir
 
 
 class SnapshotError(RuntimeError):
@@ -30,7 +31,7 @@ def upload_candidate(
     """Copy the candidate and return the remote ``model.py`` path."""
 
     settings = settings or load_settings(root)
-    source = root / "candidates" / node_id
+    source = candidate_dir(root, run_id, node_id)
     model = source / "model.py"
     if not model.is_file():
         raise SnapshotError(f"{node_id} has no model.py")

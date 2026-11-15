@@ -14,6 +14,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from amt.config import load_settings
+from amt.job_params import build_job_params
+
 CONFIRM_SPLIT = "select_holdout"
 CONFIRM_RUNG = "R3"
 CONFIRM_SEEDS: tuple[int, ...] = (0, 1, 2)
@@ -43,31 +46,34 @@ class ConfirmationSubmission:
     def job_params(self) -> dict[str, str]:
         """Parameters the confirm job accepts. Split and rung stay off this map."""
 
-        return {
-            "candidate_id": self.candidate_id,
-            "seed": self.seed,
-            "batch": self.batch,
-            "spec": self.spec,
-            "baseline": "lgbm_reference" if self.candidate_id == "lgbm_reference" else "",
-            "reference_score": "production",
-            "model": "",
-            "catalog": self.catalog,
-            "schema": self.schema,
-            "dataset_dir": "",
-            "experiment_name": "/Shared/amt/nfy_article_rerank",
-            "git_sha": self.git_sha,
-            "family": self.family,
-            "run_id": self.run_id,
-            "node_id": self.candidate_id,
-            "parent_id": "",
-            "operator": "draft",
-            "paired_reference": "production",
-            "baseline_scores": "",
-            "confirm_token": "",
-            "root": "",
-            "shared_cluster": "",
-            "device": "cpu",
-        }
+        settings = load_settings()
+        spec_name = Path(self.spec).name or self.run_id
+        return build_job_params(
+            "confirm",
+            candidate_id=self.candidate_id,
+            seed=self.seed,
+            batch=self.batch,
+            spec=self.spec,
+            baseline="lgbm_reference" if self.candidate_id == "lgbm_reference" else "",
+            reference_score="production",
+            model="",
+            catalog=self.catalog,
+            schema=self.schema,
+            dataset_dir="",
+            experiment_name=settings.experiment_for(spec_name),
+            git_sha=self.git_sha,
+            family=self.family,
+            run_id=self.run_id,
+            node_id=self.candidate_id,
+            parent_id="",
+            operator="draft",
+            paired_reference="production",
+            baseline_scores="",
+            confirm_token="",
+            root="",
+            shared_cluster="true" if settings.fixed_cluster else "",
+            device="cpu",
+        )
 
 
 def confirmation_submissions(

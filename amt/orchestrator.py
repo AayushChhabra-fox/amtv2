@@ -21,8 +21,15 @@ from amt.budget import (
 )
 from amt.config import effective_concurrency, load_settings
 from amt.confirm import ConfirmationSubmission, confirmation_submissions
+from amt.job_params import (
+    baselines_required,
+    lgbm_baseline_view,
+    missing_baseline_message,
+    train_params,
+)
 from amt.jobs_backend import FakeJobs, make_backend
 from amt.ledger import read_rows
+from amt.paths import candidate_dir
 from amt.preflight import preflight_candidate
 from amt.pruner import RunView, commit_rung, decide
 from amt.scale import (
@@ -49,12 +56,6 @@ from amt.schemas import (
 )
 from amt.signoff import SignoffError, _spec_path, brief_key, search_block_reason
 from amt.snapshot import SnapshotError, upload_candidate
-from amt.submit import (
-    baselines_required,
-    lgbm_baseline_view,
-    missing_baseline_message,
-    train_params,
-)
 from harness.data.contract import load_spec
 
 # Caps from section 3.4. A schema failure is returned once; the next one escalates.
@@ -426,7 +427,7 @@ def _search_plan(state: RunState, brief: Brief, root: Path) -> RunState:
     batch = parsed.value
     if not isinstance(batch, ProposalBatch):
         return _schema_retry(state, root, "planner output did not parse")
-    problems = _proposal_problems(state, batch, root)
+    problems = _proposal_problems(state, batch)
     if problems:
         return _schema_retry(state, root, "\n".join(problems))
     _write_proposals(output_path, batch)
@@ -534,7 +535,7 @@ def _search_critique(state: RunState, brief: Brief, root: Path) -> RunState:
 
 def _search_spec(state: RunState, root: Path) -> RunState:
     for node in _round_nodes(state):
-        _write_node_spec(root, node)
+        _write_node_spec(root, state.run_id, node)
     state.stage = "IMPLEMENT"
     return _maybe_pause(state, root, "SPEC")
 
@@ -544,7 +545,7 @@ def _search_implement(state: RunState, brief: Brief, root: Path) -> RunState:
     if node is None:
         state.stage = "PREFLIGHT"
         return _maybe_pause(state, root, "IMPLEMENT")
-    model_path = root / "candidates" / node.node_id / "model.py"
+    model_path = candidate_dir(root, state.run_id, node.node_id) / "model.py"
     run_role(
         "implementer",
         brief,
@@ -574,7 +575,7 @@ def _search_preflight(state: RunState, brief: Brief, root: Path) -> RunState:
             state.stage = "SUBMIT"
             return _maybe_pause(state, root, "PREFLIGHT")
         return _escalate(state, root, "no candidate passed preflight")
-    directory = root / "candidates" / node.node_id
+    directory = candidate_dir(root, state.run_id, node.node_id)
     if node.device == "gpu" and not load_settings(root).gpu_available:
         return _fail_preflight(
             state,
@@ -614,7 +615,7 @@ def _search_debug(state: RunState, brief: Brief, root: Path) -> RunState:
     if node is None:
         state.stage = "PREFLIGHT"
         return state
-    model_path = root / "candidates" / node.node_id / "model.py"
+    model_path = candidate_dir(root, state.run_id, node.node_id) / "model.py"
     run_role(
         "implementer",
         brief,
@@ -959,7 +960,7 @@ def _record_gains(state: RunState) -> None:
 
 
 def _fail_preflight(state: RunState, root: Path, node: NodeWork, reason: str) -> RunState:
-    _append_debug(root, node, reason)
+    _append_debug(root, state.run_id, node, reason)
     if node.debug_attempts >= MAX_DEBUG_ATTEMPTS:
         node.status = "failed"
         node.preflight = "FAIL"
@@ -1031,17 +1032,11 @@ def _escalate(state: RunState, root: Path, reason: str) -> RunState:
     return state
 
 
-def _proposal_problems(
-    state: RunState, batch: ProposalBatch, root: Path | None = None
-) -> list[str]:
+def _proposal_problems(state: RunState, batch: ProposalBatch) -> list[str]:
     allowed = set(_allowed_parent_list(state))
-    own = {node.node_id for node in state.nodes}
-    taken = set() if root is None else _used_candidate_ids(root) - own
     problems: list[str] = []
     seen: set[tuple[str, str, str]] = set()
     for candidate in batch.candidates:
-        if candidate.id in taken:
-            problems.append(f"{candidate.id} is already used by another run; pick an unused id")
         if candidate.operator != state.round_operator:
             problems.append(
                 f"{candidate.id} operator is {candidate.operator}; "
@@ -1064,13 +1059,6 @@ def _proposal_problems(
             if count < 3:
                 problems.append(f"propose 3 improvements of {parent}; found {count}")
     return problems
-
-
-def _used_candidate_ids(root: Path) -> set[str]:
-    directory = root / "candidates"
-    if not directory.is_dir():
-        return set()
-    return {path.name for path in directory.iterdir() if path.is_dir()}
 
 
 def _duplicate(candidate: Any, accepted: list[Any], root: Path) -> bool:
@@ -1219,8 +1207,8 @@ def _load_proposals(root: Path, state: RunState) -> ProposalBatch:
     return ProposalBatch.model_validate(yaml.safe_load(_proposals_path(root, state).read_text()))
 
 
-def _write_node_spec(root: Path, node: NodeWork) -> None:
-    directory = root / "candidates" / node.node_id
+def _write_node_spec(root: Path, run_id: str, node: NodeWork) -> None:
+    directory = candidate_dir(root, run_id, node.node_id)
     directory.mkdir(parents=True, exist_ok=True)
     payload = {
         "id": node.node_id,
@@ -1266,8 +1254,8 @@ def _review_verdict(path: Path) -> str | None:
     return verdict
 
 
-def _append_debug(root: Path, node: NodeWork, reason: str) -> None:
-    path = root / "candidates" / node.node_id / "debug_log.md"
+def _append_debug(root: Path, run_id: str, node: NodeWork, reason: str) -> None:
+    path = candidate_dir(root, run_id, node.node_id) / "debug_log.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = path.read_text(encoding="utf-8") if path.is_file() else "# debug log\n"
     attempt = node.debug_attempts + 1

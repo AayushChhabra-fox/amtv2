@@ -214,7 +214,7 @@ def test_debug_cap_escalates(tmp_path: Path, monkeypatch) -> None:
             {
                 "role": "implementer",
                 "node_id": "c00",
-                "files": {"candidates/c00/model.py": bad},
+                "files": {"runs/debug/candidates/c00/model.py": bad},
             }
         )
     _script(tmp_path, "debug", calls)
@@ -222,7 +222,9 @@ def test_debug_cap_escalates(tmp_path: Path, monkeypatch) -> None:
     assert state.stage == "ESCALATE"
     text = (tmp_path / "runs" / "debug" / "ESCALATE.md").read_text(encoding="utf-8")
     assert "debug cap" in text
-    log = (tmp_path / "candidates" / "c00" / "debug_log.md").read_text(encoding="utf-8")
+    log = (tmp_path / "runs" / "debug" / "candidates" / "c00" / "debug_log.md").read_text(
+        encoding="utf-8"
+    )
     assert "attempt 3" in log
     assert FakeJobs(tmp_path).submit_count() == 0
 
@@ -314,7 +316,7 @@ def test_every_stage_pauses_until_approve(tmp_path: Path, monkeypatch) -> None:
     assert third.stage == "SPEC"
     assert third.awaiting_approval is True
     assert third.approval_gate == "CRITIQUE"
-    assert not (tmp_path / "candidates" / "c00" / "model.py").exists()
+    assert not (tmp_path / "runs" / "gate" / "candidates" / "c00" / "model.py").exists()
 
 
 def test_round_shortlist_pauses_before_compute(tmp_path: Path, monkeypatch) -> None:
@@ -327,7 +329,7 @@ def test_round_shortlist_pauses_before_compute(tmp_path: Path, monkeypatch) -> N
     assert state.stage == "SPEC"
     assert state.awaiting_approval is True
     assert state.approval_gate == "CRITIQUE"
-    assert not (tmp_path / "candidates" / "c00" / "model.py").exists()
+    assert not (tmp_path / "runs" / "short" / "candidates" / "c00" / "model.py").exists()
     assert FakeJobs(tmp_path).submit_count() == 0
 
 
