@@ -1,5 +1,30 @@
 {
   "$defs": {
+    "DeltaVsBaseline": {
+      "additionalProperties": false,
+      "description": "Paired difference against the same-rung baseline.",
+      "properties": {
+        "point": {
+          "title": "Point",
+          "type": "number"
+        },
+        "ci_lo": {
+          "title": "Ci Lo",
+          "type": "number"
+        },
+        "ci_hi": {
+          "title": "Ci Hi",
+          "type": "number"
+        }
+      },
+      "required": [
+        "point",
+        "ci_lo",
+        "ci_hi"
+      ],
+      "title": "DeltaVsBaseline",
+      "type": "object"
+    },
     "NodeWork": {
       "additionalProperties": false,
       "description": "One node inside a search round. The walking skeleton leaves this empty.",
@@ -193,6 +218,13 @@
           ],
           "default": null,
           "title": "Delta Hi"
+        },
+        "rung_scores": {
+          "additionalProperties": {
+            "$ref": "#/$defs/RungScore"
+          },
+          "title": "Rung Scores",
+          "type": "object"
         }
       },
       "required": [
@@ -200,6 +232,61 @@
         "family"
       ],
       "title": "NodeWork",
+      "type": "object"
+    },
+    "RungScore": {
+      "additionalProperties": false,
+      "description": "Metrics already measured for one node at one rung.",
+      "properties": {
+        "metric": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Metric"
+        },
+        "delta_vs_production": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DeltaVsBaseline"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "delta_vs_lgbm": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DeltaVsBaseline"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "latency_p95_ms": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Latency P95 Ms"
+        }
+      },
+      "title": "RungScore",
       "type": "object"
     }
   },
@@ -405,6 +492,12 @@
       },
       "title": "Improvement Gains",
       "type": "array"
+    },
+    "scoring_final_r3": {
+      "default": false,
+      "description": "An R2 survivor is taking the R3 pass before confirmation.",
+      "title": "Scoring Final R3",
+      "type": "boolean"
     }
   },
   "required": [

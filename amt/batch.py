@@ -357,6 +357,8 @@ def _noise_cell(row: dict) -> dict:
         cell["delta_point"] = float(row["delta_point"])
         cell["delta_ci_lo"] = float(row.get("delta_ci_lo") or 0.0)
         cell["delta_ci_hi"] = float(row.get("delta_ci_hi") or 0.0)
+    if row.get("latency_p95_ms") is not None:
+        cell["latency_p95_ms"] = float(row["latency_p95_ms"])
     return cell
 
 

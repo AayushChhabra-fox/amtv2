@@ -51,6 +51,23 @@ def test_orchestrator_plans_top_three_and_three_seeds() -> None:
     assert by_node["lgbm_reference"] == "lgbm_reference"
 
 
+def test_promoted_c00_is_confirmed_without_a_second_reference() -> None:
+    planned = request_confirmation(
+        ["c00"],
+        batch="nfy",
+        spec="datasets/nfy_article_rerank",
+        run_id="run-1",
+        families={"c00": "lgbm_reference"},
+        git_sha="abc123",
+    )
+    assert len(planned) == 3
+    assert {item.candidate_id for item in planned} == {"c00"}
+    assert {item.seed for item in planned} == {"0", "1", "2"}
+    assert planned[0].family == "lgbm_reference"
+    assert planned[0].job_params()["baseline"] == ""
+    assert planned[0].split == "select_holdout"
+
+
 def test_orchestrator_plans_nothing_when_nobody_was_promoted() -> None:
     assert request_confirmation([], batch="nfy", spec="datasets/toy", run_id="r") == []
 

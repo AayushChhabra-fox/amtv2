@@ -31,7 +31,13 @@ def open_final(root: Path, run_id: str, signer: str) -> Path:
         raise FinalError("final holdout was already opened for this run")
     rows = [row for row in read_rows(root) if row.run_id == run_id and row.rung == "R3"]
     ranked = [row for row in rows if row.status in _WIN and row.kind != "baseline"]
-    ranked.sort(key=lambda row: (-(row.metric or 0.0), row.node_id))
+    ranked.sort(
+        key=lambda row: (
+            0 if row.status == "promoted" else 1,
+            -(row.metric or 0.0),
+            row.node_id,
+        )
+    )
     if not ranked:
         raise FinalError("no R3 survivor to score on the final holdout")
     chosen = ranked[:2]
@@ -157,8 +163,9 @@ def reproduce(root: Path, run_id: str, node_id: str) -> str:
     if metric is None or row.metric is None:
         return "fail: no metric"
     half = 0.0
-    if row.delta_vs_baseline is not None:
-        half = (row.delta_vs_baseline.ci_hi - row.delta_vs_baseline.ci_lo) / 2
+    delta = _effect(row)
+    if delta is not None:
+        half = (delta.ci_hi - delta.ci_lo) / 2
     if abs(float(metric) - float(row.metric)) <= max(half, 1e-9):
         return f"pass: {metric} within the R3 interval of {row.metric}"
     return f"fail: {metric} outside the R3 interval of {row.metric}"
@@ -203,11 +210,15 @@ def _holdout_params(
     )
 
 
+def _effect(row):
+    return row.delta_vs_production or row.delta_vs_lgbm
+
+
 def _select_interval(rows, node_id: str) -> tuple[float, float] | None:
-    select = [row for row in rows if row.node_id == node_id and row.delta_vs_baseline is not None]
-    if not select or select[0].delta_vs_baseline is None:
+    select = [row for row in rows if row.node_id == node_id and _effect(row) is not None]
+    if not select or _effect(select[0]) is None:
         return None
-    delta = select[0].delta_vs_baseline
+    delta = _effect(select[0])
     return delta.ci_lo, delta.ci_hi
 
 

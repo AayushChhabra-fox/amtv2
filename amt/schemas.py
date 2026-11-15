@@ -359,7 +359,8 @@ class LedgerRow(BaseModel):
     rung: Rung
     seed: int = Field(ge=0)
     metric: float | None = None
-    delta_vs_baseline: DeltaVsBaseline | None = None
+    delta_vs_production: DeltaVsBaseline | None = None
+    delta_vs_lgbm: DeltaVsBaseline | None = None
     dbu: float | None = Field(default=None, ge=0)
     wall_min: float | None = Field(default=None, ge=0)
     latency_p95_ms: float | None = Field(default=None, ge=0)
@@ -369,6 +370,18 @@ class LedgerRow(BaseModel):
     mlflow_run_id: str | None = None
     job_run_id: str | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_baseline_delta(cls, data: Any) -> Any:
+        """Old ledgers stored the paired delta as ``delta_vs_baseline``."""
+
+        if not isinstance(data, dict) or "delta_vs_baseline" not in data:
+            return data
+        migrated = dict(data)
+        legacy = migrated.pop("delta_vs_baseline")
+        migrated.setdefault("delta_vs_lgbm", legacy)
+        return migrated
+
     @model_validator(mode="after")
     def _kill_reason_matches_status(self) -> LedgerRow:
         if self.status in {"killed", "failed"} and not self.kill_reason:
@@ -376,6 +389,17 @@ class LedgerRow(BaseModel):
         if self.status in {"kept", "promoted"} and self.kill_reason:
             raise ValueError(f"{self.status} must not set kill_reason")
         return self
+
+
+class RungScore(BaseModel):
+    """Metrics already measured for one node at one rung."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    metric: float | None = None
+    delta_vs_production: DeltaVsBaseline | None = None
+    delta_vs_lgbm: DeltaVsBaseline | None = None
+    latency_p95_ms: float | None = Field(default=None, ge=0)
 
 
 class NodeWork(BaseModel):
@@ -414,6 +438,7 @@ class NodeWork(BaseModel):
     delta_point: float | None = None
     delta_lo: float | None = None
     delta_hi: float | None = None
+    rung_scores: dict[str, RungScore] = Field(default_factory=dict)
 
 
 class RunState(BaseModel):
@@ -449,6 +474,10 @@ class RunState(BaseModel):
     promoted: list[str] = Field(default_factory=list)
     rung_index: int = Field(default=0, ge=0)
     improvement_gains: list[float] = Field(default_factory=list)
+    scoring_final_r3: bool = Field(
+        default=False,
+        description="An R2 survivor is taking the R3 pass before confirmation.",
+    )
 
 
 class AgentRevision(BaseModel):

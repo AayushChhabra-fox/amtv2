@@ -114,7 +114,18 @@
       "default": null,
       "title": "Metric"
     },
-    "delta_vs_baseline": {
+    "delta_vs_production": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DeltaVsBaseline"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "delta_vs_lgbm": {
       "anyOf": [
         {
           "$ref": "#/$defs/DeltaVsBaseline"

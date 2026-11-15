@@ -162,8 +162,9 @@ def _normalized(spec: str | None) -> str | None:
 
 def _one_line(row: LedgerRow, notes: dict[str, str] | None = None) -> str:
     delta = "-"
-    if row.delta_vs_baseline is not None:
-        delta = f"{row.delta_vs_baseline.point:.4f}"
+    shown = row.delta_vs_lgbm or row.delta_vs_production
+    if shown is not None:
+        delta = f"{shown.point:.4f}"
     elif row.metric is not None:
         delta = f"metric={row.metric:.4f}"
     parent = row.parent_id or "-"
@@ -187,8 +188,9 @@ def _best_by_family(rows: list[LedgerRow]) -> list[LedgerRow]:
 
 
 def _score(row: LedgerRow) -> float:
-    if row.delta_vs_baseline is not None:
-        return row.delta_vs_baseline.point
+    shown = row.delta_vs_lgbm or row.delta_vs_production
+    if shown is not None:
+        return shown.point
     if row.metric is not None:
         return row.metric
     return float("-inf")

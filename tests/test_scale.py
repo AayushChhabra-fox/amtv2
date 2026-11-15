@@ -346,7 +346,7 @@ def test_k4_unattended_run_records_stats_and_opens_phase2(
     assert all(row.kill_reason for row in killed)
     assert len({row.family for row in small_rows}) >= 3
 
-    assert FakeJobs(tmp_path).submit_count() == before + 27
+    assert FakeJobs(tmp_path).submit_count() == before + 24
     assert full_budget_block_reason(tmp_path) is None
     assert (
         scale_block_reason(tmp_path, scale="full", run_id="full-entry", k=4, approval_mode="none")

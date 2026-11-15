@@ -64,6 +64,9 @@ def _run(
     rung: str = "R1",
     **extra: object,
 ) -> RunView:
+    prod_point = extra.pop("prod_point", None)
+    prod_lo = extra.pop("prod_lo", None)
+    prod_hi = extra.pop("prod_hi", None)
     payload: dict = {
         "node_id": node_id,
         "family": family,
@@ -78,6 +81,12 @@ def _run(
         "mlflow_run_id": f"m-{node_id}",
         "job_run_id": f"fake-{node_id}",
     }
+    if prod_point is not None:
+        payload["delta_vs_production"] = DeltaVsBaseline(
+            point=float(prod_point),
+            ci_lo=float(prod_lo),
+            ci_hi=float(prod_hi),
+        )
     payload.update(extra)
     return RunView.model_validate(payload)
 
@@ -177,25 +186,24 @@ def test_one_seed_without_metrics_fails_the_node() -> None:
 @pytest.mark.parametrize(
     ("rung", "hi", "killed"),
     [
-        ("R1", -0.02, True),
-        ("R1", -0.01, False),
+        ("R1", -0.03, True),
+        ("R1", -0.02, False),
         ("R1", -0.005, False),
-        ("R2", -0.001, True),
+        ("R2", -0.02, True),
+        ("R2", -0.01, False),
         ("R2", 0.0, False),
-        ("R3", 0.009, True),
-        ("R3", 0.01, False),
     ],
 )
-def test_floor_tightens_by_rung(rung: str, hi: float, killed: bool) -> None:
+def test_floor_is_c00_relative(rung: str, hi: float, killed: bool) -> None:
     run = _run("c1", point=hi - 0.01, lo=hi - 0.02, hi=hi, rung=rung)
-    decision = decide(rung, [run], [_baseline(rung)], _brief())
+    decision = decide(rung, [run], [_baseline(rung)], _brief(min_effect=0.01))
     item = decision.decisions[0]
     if killed:
         assert item.rule == "below_floor"
         assert item.status == "killed"
-        assert "lgbm_reference" in item.kill_reason
+        assert "c00" in item.kill_reason
     else:
-        assert item.status in {"kept", "promoted"}
+        assert item.status == "kept"
         assert item.rule != "below_floor"
 
 
@@ -206,18 +214,21 @@ def test_r1_noise_inside_the_interval_survives() -> None:
     assert decision.decisions[0].rule == "survive"
 
 
-def test_ref_delta_below_the_floor_kills() -> None:
+def test_production_gap_does_not_set_the_r1_floor() -> None:
     run = _run(
         "c1",
         point=0.02,
         lo=0.0,
         hi=0.04,
         ref_deltas={"production": DeltaVsBaseline(point=-0.04, ci_lo=-0.06, ci_hi=-0.05)},
+        prod_point=-0.04,
+        prod_lo=-0.06,
+        prod_hi=-0.05,
     )
     decision = decide("R1", [run], [_baseline()], _brief())
     item = decision.decisions[0]
-    assert item.rule == "below_floor"
-    assert "production" in item.kill_reason
+    assert item.status == "kept"
+    assert item.rule == "survive"
 
 
 def test_r1_requires_same_rung_lightgbm_baseline() -> None:
@@ -363,9 +374,18 @@ def test_r2_diversity_slot_keeps_one_wiped_family() -> None:
     assert _by_id(later)["b"].rule == "halving"
 
 
-def test_r3_promotes_top_three_with_lower_bound_above_zero() -> None:
+def test_r3_promotes_top_three_that_beat_production_and_c00() -> None:
     runs = [
-        _run(f"n{index}", point=0.05 - index * 0.01, lo=0.005, hi=0.06, rung="R3")
+        _run(
+            f"n{index}",
+            point=0.05 - index * 0.01,
+            lo=0.005,
+            hi=0.06,
+            rung="R3",
+            prod_point=0.05 - index * 0.01,
+            prod_lo=0.005,
+            prod_hi=0.06,
+        )
         for index in range(5)
     ]
     decision = decide("R3", runs, [_baseline("R3")], _brief())
@@ -550,7 +570,8 @@ def test_commit_writes_survivors_and_does_not_duplicate(tmp_path: Path) -> None:
     assert rows[0].mlflow_run_id == "m-c1"
     assert rows[0].job_run_id == "fake-c1"
     assert rows[0].git_sha == "abc123"
-    assert rows[0].delta_vs_baseline is not None
+    assert rows[0].delta_vs_lgbm is not None
+    assert rows[0].delta_vs_lgbm.point == pytest.approx(0.02)
 
 
 def test_commit_records_a_kill_reason(tmp_path: Path) -> None:
@@ -561,6 +582,185 @@ def test_commit_records_a_kill_reason(tmp_path: Path) -> None:
     assert rows[0].status == "killed"
     assert rows[0].kill_reason
     assert "below floor" in rows[0].kill_reason
+
+
+def test_family_slot_keeps_the_best_node_through_the_r1_floor() -> None:
+    neural = _run(
+        "n",
+        point=-0.05,
+        lo=-0.08,
+        hi=-0.04,
+        family="neural",
+        metric=0.30,
+        rung="R1",
+    )
+    weaker = _run(
+        "n2",
+        point=-0.06,
+        lo=-0.09,
+        hi=-0.05,
+        family="neural",
+        metric=0.22,
+        rung="R1",
+    )
+    trees = _run("t", point=0.02, lo=0.0, hi=0.04, family="trees", metric=0.50, rung="R1")
+    decision = decide(
+        "R1",
+        [neural, weaker, trees],
+        [_baseline()],
+        _brief(min_effect=0.01),
+        random_metric=0.20,
+    )
+    by_id = _by_id(decision)
+    assert by_id["n"].status == "kept"
+    assert by_id["n"].rule == "family_slot"
+    assert by_id["n2"].rule == "below_floor"
+    assert by_id["t"].rule == "family_slot"
+    assert "n" in decision.survivors
+    assert "n2" not in decision.survivors
+
+
+def test_family_slot_is_not_halved_at_r2() -> None:
+    runs = [
+        _run("a", point=0.05, lo=-0.05, hi=0.10, family="boost", metric=0.50, rung="R2"),
+        _run("b", point=0.04, lo=-0.05, hi=0.10, family="boost", metric=0.45, rung="R2"),
+        _run("c", point=0.03, lo=-0.05, hi=0.10, family="boost", metric=0.44, rung="R2"),
+        _run("n", point=0.0, lo=-0.05, hi=0.10, family="neural", metric=0.30, rung="R2"),
+    ]
+    decision = decide("R2", runs, [_baseline("R2")], _brief(), random_metric=0.20)
+    assert "n" in decision.survivors
+    assert _by_id(decision)["n"].rule == "family_slot"
+    assert _by_id(decision)["c"].rule == "halving"
+    assert "a" in decision.survivors
+
+
+def test_r3_promotes_c00_when_no_candidate_outranks_it() -> None:
+    candidate = _run(
+        "n1",
+        point=0.02,
+        lo=-0.01,
+        hi=0.04,
+        rung="R3",
+        prod_point=0.03,
+        prod_lo=0.01,
+        prod_hi=0.05,
+    )
+    archive = _baseline("R3").model_copy(
+        update={
+            "delta_vs_production": DeltaVsBaseline(point=0.02, ci_lo=0.005, ci_hi=0.04),
+            "latency_p95_ms": 10.0,
+            "metric": 0.5,
+        }
+    )
+    decision = decide("R3", [candidate], [archive], _brief(min_effect=0.01, latency=20))
+    assert decision.promoted == ["c00"]
+    assert decision.decisions[0].status == "kept"
+
+
+def test_r3_candidate_that_beats_c00_is_promoted_ahead_of_the_archive() -> None:
+    candidate = _run(
+        "n1",
+        point=0.03,
+        lo=0.01,
+        hi=0.05,
+        rung="R3",
+        prod_point=0.02,
+        prod_lo=0.005,
+        prod_hi=0.04,
+    )
+    archive = _baseline("R3").model_copy(
+        update={
+            "delta_vs_production": DeltaVsBaseline(point=0.04, ci_lo=0.01, ci_hi=0.06),
+            "latency_p95_ms": 10.0,
+        }
+    )
+    decision = decide("R3", [candidate], [archive], _brief(min_effect=0.01))
+    assert decision.promoted == ["n1"]
+
+
+def test_slow_candidate_fails_the_symmetric_gate_and_c00_is_promoted() -> None:
+    candidate = _run(
+        "slow",
+        point=0.04,
+        lo=0.02,
+        hi=0.06,
+        rung="R3",
+        latency_p95_ms=50.0,
+        prod_point=0.03,
+        prod_lo=0.01,
+        prod_hi=0.05,
+    )
+    archive = _baseline("R3").model_copy(
+        update={
+            "delta_vs_production": DeltaVsBaseline(point=0.02, ci_lo=0.005, ci_hi=0.04),
+            "latency_p95_ms": 10.0,
+        }
+    )
+    decision = decide(
+        "R3",
+        [candidate],
+        [archive],
+        _brief(min_effect=0.01, latency=20),
+        shared_cluster=True,
+    )
+    assert decision.promoted == ["c00"]
+    assert _by_id(decision)["slow"].status == "kept"
+    assert _by_id(decision)["slow"].note == "latency_suspect"
+
+
+def test_seed_c00_materializes_a_ranker_and_round0_metrics(tmp_path: Path) -> None:
+    from amt.preflight import preflight_candidate
+    from amt.schemas import RunState
+    from amt.search_policy import seed_c00
+
+    brief = _brief()
+    brief.name = "nfy"
+    rows = []
+    for rung, point in (("R1", 0.01), ("R2", 0.02), ("R3", 0.03)):
+        for seed in range(3):
+            rows.append(
+                {
+                    "baseline_id": "lgbm_reference",
+                    "rung": rung,
+                    "seed": seed,
+                    "metric": 0.40 + point,
+                    "delta_point": point,
+                    "delta_ci_lo": point - 0.005,
+                    "delta_ci_hi": point + 0.005,
+                    "latency_p95_ms": 12.0 + seed,
+                }
+            )
+    directory = tmp_path / "runs" / "round0-nfy"
+    directory.mkdir(parents=True)
+    (directory / "round0.json").write_text(json.dumps(rows), encoding="utf-8")
+    state = RunState.model_validate(
+        {
+            "run_id": "search",
+            "brief_path": "briefs/nfy.yaml",
+            "candidate_id": "pending",
+            "family": "search",
+            "rung": "R1",
+            "seed": 0,
+            "batch": "nfy",
+            "git_sha": "abc123",
+        }
+    )
+    seed_c00(tmp_path, state, brief)
+    seed_c00(tmp_path, state, brief)
+    assert [node.node_id for node in state.nodes if node.node_id == "c00"] == ["c00"]
+    node = state.nodes[0]
+    assert node.family == "lgbm_reference"
+    assert node.rung_scores["R3"].delta_vs_production is not None
+    assert node.rung_scores["R3"].delta_vs_production.point == pytest.approx(0.03)
+    assert node.rung_scores["R1"].latency_p95_ms == pytest.approx(14.0)
+    assert node.rung_scores["R2"].delta_vs_lgbm.point == pytest.approx(0.0)
+    candidate = tmp_path / "runs" / "search" / "candidates" / "c00"
+    assert (candidate / "spec.md").is_file()
+    assert (candidate / "candidate.yaml").is_file()
+    assert "VERDICT: PASS" in (candidate / "review.md").read_text(encoding="utf-8")
+    smoke = preflight_candidate(candidate)
+    assert smoke["deterministic"] == 1.0
+    assert smoke["finite"] == 1.0
 
 
 def test_pruner_job_passes_run_files() -> None:

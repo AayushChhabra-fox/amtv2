@@ -7,7 +7,6 @@ caller passes the experiment name from ``Settings.experiment_for``.
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 
@@ -126,9 +125,15 @@ def missing_baseline_message(root: Path, brief: Brief, rung: str) -> str | None:
 
 
 def lgbm_baseline_view(root: Path, brief: Brief, rung: str, git_sha: str) -> RunView:
-    """Same-rung LightGBM reference from round 0, or a zero delta when round 0 is not required."""
+    """Same-rung LightGBM reference from round 0, or a zero delta when round 0 is absent."""
 
-    metric, delta = _round0_lgbm(root, brief, rung)
+    from amt.search_policy import c00_rung_scores
+
+    score = c00_rung_scores(root, brief).get(rung)
+    zero = DeltaVsBaseline(point=0.0, ci_lo=0.0, ci_hi=0.0)
+    metric = 0.4 if score is None or score.metric is None else score.metric
+    production = None if score is None else score.delta_vs_production
+    latency = None if score is None else score.latency_p95_ms
     return RunView(
         node_id="lgbm_reference",
         family="lgbm_reference",
@@ -138,22 +143,9 @@ def lgbm_baseline_view(root: Path, brief: Brief, rung: str, git_sha: str) -> Run
         operator="draft",
         claim="same-rung lightgbm reference",
         metric=metric,
-        delta=delta,
+        delta=zero,
+        delta_vs_lgbm=zero,
+        delta_vs_production=production,
+        latency_p95_ms=latency,
         git_sha=git_sha,
     )
-
-
-def _round0_lgbm(root: Path, brief: Brief, rung: str) -> tuple[float, DeltaVsBaseline]:
-    spec = brief.resolved_dataset_spec() or ""
-    path = root / "runs" / f"round0-{brief.name or Path(spec).name}" / "round0.json"
-    if path.is_file():
-        rows = json.loads(path.read_text(encoding="utf-8"))
-        matched = [
-            row
-            for row in rows
-            if row.get("baseline_id") == "lgbm_reference" and row.get("rung") == rung
-        ]
-        if matched:
-            point = sum(float(row["metric"]) for row in matched) / len(matched)
-            return point, DeltaVsBaseline(point=0.0, ci_lo=0.0, ci_hi=0.0)
-    return 0.4, DeltaVsBaseline(point=0.0, ci_lo=0.0, ci_hi=0.0)

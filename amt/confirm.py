@@ -110,7 +110,7 @@ def confirmation_submissions(
                     schema=schema,
                 )
             )
-    if chosen:
+    if chosen and "c00" not in chosen and "lgbm_reference" not in chosen:
         for seed in CONFIRM_SEEDS:
             submissions.append(
                 ConfirmationSubmission(

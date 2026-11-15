@@ -58,6 +58,13 @@ from amt.schemas import (
     load_brief,
     parse_agent_output,
 )
+from amt.search_policy import (
+    C00_ID,
+    random_metric_at,
+    record_c00_promotion,
+    rungs_for,
+    seed_c00,
+)
 from amt.snapshot import SnapshotError, upload_candidate
 from harness.data.contract import load_spec
 
@@ -133,6 +140,9 @@ def run_brief(
     if problems:
         return _stop(state_path, state, root, "; ".join(problems))
     backend = make_backend(root)
+    if brief.candidate is None and state.scale != "calibration":
+        seed_c00(root, state, brief)
+        _save(state_path, state)
     while state.stage not in {"REPORT", "ESCALATE"}:
         if _stop_requested(root, state.run_id):
             state.stop_requested = True
@@ -474,7 +484,7 @@ def _search_critique(state: RunState, brief: Brief, root: Path) -> RunState:
         state.stage = "PLAN"
         return _maybe_pause(state, root, "CRITIQUE")
     _clear_feedback(root, state)
-    rung = _rungs_for(state.round_operator)[0]
+    rung = _rungs_for(state)[0]
     state.rung_index = 0
     state.nodes = [
         node
@@ -743,7 +753,7 @@ def _retry_infra_failure(
 
 
 def _search_prune(state: RunState, brief: Brief, root: Path, backend: object) -> RunState:
-    schedule = _rungs_for(state.round_operator)
+    schedule = _rungs_for(state)
     rung = schedule[state.rung_index]
     views: list[RunView] = []
     charges: dict[str, float] = {}
@@ -762,8 +772,9 @@ def _search_prune(state: RunState, brief: Brief, root: Path, backend: object) ->
         )
         charged = _job_charge(record)
         charges[node.node_id] = charged
-        delta = _delta_from_found(found)
+        production, lgbm = _deltas_from_found(found)
         metric = None if found is None else found.get("metric")
+        latency = None if found is None else found.get("latency_p95_ms")
         views.append(
             RunView(
                 node_id=node.node_id,
@@ -776,7 +787,10 @@ def _search_prune(state: RunState, brief: Brief, root: Path, backend: object) ->
                 parent_id=node.parent_id,
                 round=state.round,
                 metric=None if metric is None else float(metric),
-                delta=delta,
+                delta=lgbm,
+                delta_vs_lgbm=lgbm,
+                delta_vs_production=production,
+                latency_p95_ms=None if latency is None else float(latency),
                 preflight="FAIL" if node.status == "failed" else (node.preflight or "PASS"),
                 review="FAIL" if node.status == "failed" else (node.review or "PASS"),
                 dbu=charged,
@@ -795,10 +809,14 @@ def _search_prune(state: RunState, brief: Brief, root: Path, backend: object) ->
             [baseline],
             brief,
             shared_cluster=load_settings(root).fixed_cluster,
+            random_metric=random_metric_at(root, brief, rung),
         )
     except Exception as exc:
         return _escalate(state, root, f"pruner failed: {exc}")
     commit_rung(root, state.run_id, views, decision)
+    if decision.promoted:
+        state.promoted = list(decision.promoted)
+        record_c00_promotion(root, state, rung)
     by_id = {item.node_id: item for item in decision.decisions}
     for node in _round_nodes(state):
         item = by_id.get(node.node_id)
@@ -810,9 +828,19 @@ def _search_prune(state: RunState, brief: Brief, root: Path, backend: object) ->
             node.delta_hi = item.delta.ci_hi
         node.status = "kept" if item.status in {"kept", "promoted"} else item.status  # type: ignore[assignment]
         _mark_pruned(state, node, charges.get(node.node_id, 0.0))
-    if decision.promoted:
-        state.promoted = list(decision.promoted)
     state.live_nodes = list(decision.survivors)
+    if state.scoring_final_r3:
+        state.scoring_final_r3 = False
+        state.promoted = list(decision.promoted)
+        if decision.promoted:
+            record_c00_promotion(root, state, rung)
+        _write_round_digest(root, state, decision)
+        if not state.promoted:
+            state.stage = "REPORT"
+            _write_report(root, state, brief)
+            return state
+        state.stage = "CONFIRM"
+        return _maybe_pause(state, root, "PRUNE")
     if decision.survivors and state.rung_index + 1 < len(schedule):
         state.rung_index += 1
         next_rung = schedule[state.rung_index]
@@ -908,7 +936,11 @@ def _advance_round(state: RunState, brief: Brief, root: Path, survived: bool) ->
         state.stage = "PLAN"
         return _maybe_pause(state, root, "PRUNE")
     state.outer_retries = 0
-    kept = [node.node_id for node in state.nodes if node.status == "kept"]
+    kept = [
+        node.node_id
+        for node in state.nodes
+        if node.status == "kept" and node.node_id != C00_ID
+    ]
     nxt = operator_for_round(
         state.round + 1,
         plateau=fork_on_plateau(list(state.improvement_gains), brief.effect_floor()),
@@ -917,6 +949,15 @@ def _advance_round(state: RunState, brief: Brief, root: Path, survived: bool) ->
     if brief.max_rounds is not None and state.round >= brief.max_rounds:
         nxt = "confirm"
     if nxt == "confirm":
+        pending = _unscored_final_r3(state)
+        if pending:
+            for node in pending:
+                node.rung = "R3"
+                node.status = "ready"
+            state.scoring_final_r3 = True
+            state.rung_index = 0
+            state.stage = "SUBMIT"
+            return _maybe_pause(state, root, "PRUNE")
         if not state.promoted:
             state.stage = "REPORT"
             _write_report(root, state, brief)
@@ -1019,6 +1060,8 @@ def _proposal_problems(state: RunState, batch: ProposalBatch) -> list[str]:
     problems: list[str] = []
     seen: set[tuple[str, str, str]] = set()
     for candidate in batch.candidates:
+        if candidate.id == C00_ID and state.scale != "calibration":
+            problems.append(f"{candidate.id} is reserved for the LightGBM reference")
         if candidate.operator != state.round_operator:
             problems.append(
                 f"{candidate.id} operator is {candidate.operator}; "
@@ -1037,6 +1080,8 @@ def _proposal_problems(state: RunState, batch: ProposalBatch) -> list[str]:
             )
     if state.scale == "small" and state.round_operator == "improve":
         for parent in _allowed_parent_list(state):
+            if parent == C00_ID:
+                continue
             count = sum(1 for candidate in batch.candidates if candidate.parent_id == parent)
             if count < 3:
                 problems.append(f"propose 3 improvements of {parent}; found {count}")
@@ -1063,16 +1108,31 @@ def _allowed_parent_list(state: RunState) -> list[str]:
     if state.round_operator == "draft":
         return []
     if state.round_operator == "combine":
-        return _combine_parents(state)
-    previous = state.round - 1
-    kept = [node for node in state.nodes if node.status == "kept" and node.search_round == previous]
-    if state.scale == "small":
-        return _top_lineages(kept, limit=2)
-    return [node.node_id for node in kept]
+        parents = _combine_parents(state)
+    else:
+        previous = state.round - 1
+        kept = [
+            node
+            for node in state.nodes
+            if node.status == "kept" and node.search_round == previous and node.node_id != C00_ID
+        ]
+        if state.scale == "small":
+            parents = _top_lineages(kept, limit=2)
+        else:
+            parents = [node.node_id for node in kept]
+    if _archive_ready(state) and C00_ID not in parents:
+        parents = [C00_ID, *parents]
+    return parents
+
+
+def _archive_ready(state: RunState) -> bool:
+    return any(
+        node.node_id == C00_ID and node.family == "lgbm_reference" for node in state.nodes
+    )
 
 
 def _combine_parents(state: RunState) -> list[str]:
-    kept = [node for node in state.nodes if node.status == "kept"]
+    kept = [node for node in state.nodes if node.status == "kept" and node.node_id != C00_ID]
     kept.sort(key=lambda node: (-node.search_round, -(node.delta_point or 0.0), node.node_id))
     found: list[str] = []
     for node in kept:
@@ -1094,12 +1154,23 @@ def _find_node(state: RunState, node_id: str) -> NodeWork | None:
     return None
 
 
-def _rungs_for(operator: str) -> list[str]:
-    if operator == "draft":
-        return ["R1", "R2", "R3"]
-    if operator == "combine":
+def _rungs_for(state: RunState) -> list[str]:
+    if state.scoring_final_r3:
         return ["R3"]
-    return ["R2", "R3"]
+    return rungs_for(state.round_operator, scale=state.scale)
+
+
+def _unscored_final_r3(state: RunState) -> list[NodeWork]:
+    """R2 survivors that are about to be confirmed and have not run R3."""
+
+    return [
+        node
+        for node in state.nodes
+        if node.node_id != C00_ID
+        and node.search_round == state.round
+        and node.status in {"kept", "promoted"}
+        and node.rung != "R3"
+    ]
 
 
 def _job_key(node: NodeWork) -> str:
@@ -1147,21 +1218,29 @@ def _job_charge(record: dict[str, Any]) -> float:
     return float(record.get("dbu_est") or 0.0)
 
 
-def _delta_from_found(found: dict[str, Any] | None) -> DeltaVsBaseline | None:
+def _deltas_from_found(
+    found: dict[str, Any] | None,
+) -> tuple[DeltaVsBaseline | None, DeltaVsBaseline | None]:
+    """Production paired delta, then the same-rung LightGBM paired delta."""
+
     if not found:
-        return None
-    if found.get("delta_lgbm_point") is not None:
-        return DeltaVsBaseline(
-            point=float(found["delta_lgbm_point"]),
-            ci_lo=float(found["delta_lgbm_ci_lo"]),
-            ci_hi=float(found["delta_lgbm_ci_hi"]),
-        )
-    if found.get("delta_point") is None:
+        return None, None
+    production = _delta_keys(found, "delta_point", "delta_ci_lo", "delta_ci_hi")
+    lgbm = _delta_keys(found, "delta_lgbm_point", "delta_lgbm_ci_lo", "delta_lgbm_ci_hi")
+    if lgbm is None:
+        lgbm = production
+    return production, lgbm
+
+
+def _delta_keys(
+    found: dict[str, Any], point: str, low: str, high: str
+) -> DeltaVsBaseline | None:
+    if found.get(point) is None:
         return None
     return DeltaVsBaseline(
-        point=float(found["delta_point"]),
-        ci_lo=float(found["delta_ci_lo"]),
-        ci_hi=float(found["delta_ci_hi"]),
+        point=float(found[point]),
+        ci_lo=float(found.get(low) or 0.0),
+        ci_hi=float(found.get(high) or 0.0),
     )
 
 

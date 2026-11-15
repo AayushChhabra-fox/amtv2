@@ -350,7 +350,9 @@ def test_candidate_schema_lists_plan_fields() -> None:
         "est_cost",
     }
     ledger = set(LedgerRow.model_json_schema()["properties"])
-    assert "delta_vs_baseline" in ledger
+    assert "delta_vs_lgbm" in ledger
+    assert "delta_vs_production" in ledger
+    assert "delta_vs_baseline" not in ledger
     assert "mlflow_run_id" in ledger
     assert "job_run_id" in ledger
 

@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -22,7 +23,8 @@ def _row(**overrides: object) -> LedgerRow:
         "job_run_id": "1",
         "mlflow_run_id": "m1",
         "metric": 0.5,
-        "delta_vs_baseline": {"point": 0.02, "ci_lo": 0.0, "ci_hi": 0.04},
+        "delta_vs_lgbm": {"point": 0.02, "ci_lo": 0.0, "ci_hi": 0.04},
+        "delta_vs_production": {"point": 0.01, "ci_lo": 0.0, "ci_hi": 0.03},
     }
     payload.update(overrides)
     return LedgerRow.model_validate(payload)
@@ -30,9 +32,24 @@ def _row(**overrides: object) -> LedgerRow:
 
 def test_append_round_trip_preserves_delta(tmp_path: Path) -> None:
     row = _row()
-    assert row.delta_vs_baseline == DeltaVsBaseline(point=0.02, ci_lo=0.0, ci_hi=0.04)
+    assert row.delta_vs_lgbm == DeltaVsBaseline(point=0.02, ci_lo=0.0, ci_hi=0.04)
+    assert row.delta_vs_production == DeltaVsBaseline(point=0.01, ci_lo=0.0, ci_hi=0.03)
     append(tmp_path, row)
     assert read_rows(tmp_path) == [row]
+
+
+def test_legacy_delta_vs_baseline_loads_as_lgbm(tmp_path: Path) -> None:
+    legacy = _row()
+    payload = json.loads(legacy.model_dump_json())
+    payload.pop("delta_vs_lgbm")
+    payload.pop("delta_vs_production")
+    payload["delta_vs_baseline"] = {"point": 0.02, "ci_lo": 0.0, "ci_hi": 0.04}
+    path = tmp_path / "ledger" / "results.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    row = read_rows(tmp_path)[0]
+    assert row.delta_vs_lgbm == DeltaVsBaseline(point=0.02, ci_lo=0.0, ci_hi=0.04)
+    assert row.delta_vs_production is None
 
 
 def test_append_does_not_rewrite_earlier_rows(tmp_path: Path) -> None:

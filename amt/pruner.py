@@ -1,9 +1,8 @@
 """Deterministic rung pruner.
 
-``decide`` applies the section 5.3 rules to synthetic or real MLflow runs and
-returns a ``RungDecision``. It compares candidates on the paired delta against
-the same-rung LightGBM reference, and against every ``ref.*`` delta the runs
-carry. Search never scores ``select_holdout`` or ``final_holdout``.
+``decide`` applies hard kills, a c00-relative exploration floor, family-slot
+protection, and the symmetric R3 promotion gate. Search never scores
+``select_holdout`` or ``final_holdout``.
 
 The CLI and the Databricks pruner job call ``decide`` and then append ledger
 rows. The function itself only reads the run records it is given.
@@ -21,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from amt.ledger import append, read_rows
 from amt.schemas import (
@@ -41,6 +40,9 @@ SEARCH_METRIC_KEYS: frozenset[str] = frozenset(
         "delta_point",
         "delta_ci_lo",
         "delta_ci_hi",
+        "delta_lgbm_point",
+        "delta_lgbm_ci_lo",
+        "delta_lgbm_ci_hi",
         "latency_p95_ms",
         "dbu",
         "wall_min",
@@ -49,6 +51,7 @@ SEARCH_METRIC_KEYS: frozenset[str] = frozenset(
 _HOLDOUT_SPLITS = frozenset({"select_holdout", "final_holdout"})
 _LGBM_FAMILIES = frozenset({"lgbm_reference", "lgbm", "lightgbm"})
 _SEARCH_RUNGS = frozenset({"R1", "R2", "R3"})
+_ARCHIVE_IDS = frozenset({"c00", "lgbm_reference"})
 _NO_METRIC = "run produced no metric"
 
 
@@ -87,7 +90,23 @@ class RunView(BaseModel):
     round: int = Field(default=0, ge=0)
     metric: float | None = None
     delta: DeltaVsBaseline | None = None
+    delta_vs_production: DeltaVsBaseline | None = None
+    delta_vs_lgbm: DeltaVsBaseline | None = None
     ref_deltas: dict[str, DeltaVsBaseline] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _alias_lgbm_delta(cls, data: Any) -> Any:
+        """``delta`` remains the LightGBM paired delta for older callers."""
+
+        if not isinstance(data, dict):
+            return data
+        payload = dict(data)
+        if payload.get("delta_vs_lgbm") is None and payload.get("delta") is not None:
+            payload["delta_vs_lgbm"] = payload["delta"]
+        elif payload.get("delta") is None and payload.get("delta_vs_lgbm") is not None:
+            payload["delta"] = payload["delta_vs_lgbm"]
+        return payload
     query_deltas: list[QueryDelta] = Field(default_factory=list)
     latency_p95_ms: float | None = None
     dbu: float | None = None
@@ -111,9 +130,23 @@ class NodeDecision(BaseModel):
     rule: str
     kill_reason: str | None = None
     delta: DeltaVsBaseline | None = None
+    delta_vs_production: DeltaVsBaseline | None = None
+    delta_vs_lgbm: DeltaVsBaseline | None = None
     ref_deltas: dict[str, DeltaVsBaseline] = Field(default_factory=dict)
     seeds: list[int] = Field(default_factory=list)
     note: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _alias_lgbm_delta(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        payload = dict(data)
+        if payload.get("delta_vs_lgbm") is None and payload.get("delta") is not None:
+            payload["delta_vs_lgbm"] = payload["delta"]
+        elif payload.get("delta") is None and payload.get("delta_vs_lgbm") is not None:
+            payload["delta"] = payload["delta_vs_lgbm"]
+        return payload
 
 
 class RungDecision(BaseModel):
@@ -133,6 +166,9 @@ class _Summary:
     node_id: str
     family: str
     delta: DeltaVsBaseline | None
+    delta_vs_production: DeltaVsBaseline | None
+    delta_vs_lgbm: DeltaVsBaseline | None
+    metric: float | None
     ref_deltas: dict[str, DeltaVsBaseline]
     dbu: float | None
     latency_p95_ms: float | None
@@ -149,12 +185,16 @@ def decide(
     n_resamples: int = 1000,
     seed: int = 0,
     shared_cluster: bool = False,
+    random_metric: float | None = None,
 ) -> RungDecision:
-    """Apply hard kills, the rung floor, and from R2 dominance, halving, and promotion.
+    """Apply hard kills, the c00 floor, family protection, and symmetric promotion.
 
     ``rung`` is ``R0`` through ``R3``. ``runs`` are the candidate seeds.
     ``baseline_runs`` are the same-rung LightGBM reference and any ``ref.*``
     baselines. Both sequences must already be scored on ``search_val``.
+    ``random_metric`` is the same-rung random baseline. When it is set, the
+    best healthy node of each family that beats it is kept through the R1/R2
+    floor and halving.
     """
 
     if rung not in {"R0", "R1", "R2", "R3"}:
@@ -171,6 +211,10 @@ def decide(
     if rung in _SEARCH_RUNGS and not _lgbm_baselines(baselines, rung):
         raise PrunerError(f"{rung} requires a same-rung LightGBM reference scored on search_val")
 
+    if random_metric is None:
+        random_metric = _random_metric(baselines)
+    archive = _archive_summary(baselines)
+
     grouped = _group(candidates)
     preliminary: dict[str, NodeDecision] = {}
     latency_suspect: set[str] = set()
@@ -186,33 +230,47 @@ def decide(
             preliminary[node_id] = hard
             continue
         if rung in _SEARCH_RUNGS:
-            missing = _missing_delta(summary)
+            missing = _missing_delta(summary, rung)
             if missing is not None:
                 preliminary[node_id] = missing
                 continue
-            floor = _floor_kill(summary, brief, rung)
-            if floor is not None:
-                preliminary[node_id] = floor
-                continue
         alive.append(summary)
 
+    protected = _family_protected(alive, random_metric) if rung in {"R1", "R2"} else set()
+    contenders: list[_Summary] = []
+    for summary in alive:
+        if summary.node_id in protected:
+            contenders.append(summary)
+            continue
+        if rung in _SEARCH_RUNGS:
+            floor = _floor_kill(summary, brief, rung)
+            if floor is not None:
+                preliminary[summary.node_id] = floor
+                continue
+        contenders.append(summary)
+
     dominated: dict[str, NodeDecision] = {}
-    # R1 only drops hard failures and models that are clearly worse than the
-    # same-rung baseline. A small sample should not halve or dominate.
+    # R1 does not halve or dominate. Family slots are held out of both so a
+    # non-GBDT family that beats random still reaches the next round.
+    open_nodes = [node for node in contenders if node.node_id not in protected]
     if rung in {"R2", "R3"}:
-        dominated = _dominance_kills(alive, n_resamples=n_resamples, seed=seed)
-        alive = [node for node in alive if node.node_id not in dominated]
+        dominated = _dominance_kills(open_nodes, n_resamples=n_resamples, seed=seed)
+        open_nodes = [node for node in open_nodes if node.node_id not in dominated]
 
     diversity_slot: str | None = None
     promoted: list[str] = []
     if rung in {"R2", "R3"}:
-        kept, diversity_slot = _halve(alive, rung)
-        if rung == "R3":
-            promoted = _promote(kept)
+        kept, diversity_slot = _halve(open_nodes, rung)
     else:
-        kept = sorted(alive, key=_rank_key)
+        kept = sorted(open_nodes, key=_rank_key)
+    shielded = [node for node in contenders if node.node_id in protected]
+    kept.extend(node for node in shielded if node.node_id not in {item.node_id for item in kept})
+    kept.sort(key=_rank_key)
+    if rung == "R3":
+        promoted = _promote(kept, brief, archive)
 
     kept_ids = {node.node_id for node in kept}
+    by_summary = {node.node_id: node for node in contenders}
     decisions: list[NodeDecision] = []
     for node_id in sorted(grouped):
         if node_id in preliminary:
@@ -221,7 +279,7 @@ def decide(
         if node_id in dominated:
             decisions.append(dominated[node_id])
             continue
-        summary = next(node for node in alive if node.node_id == node_id)
+        summary = by_summary[node_id]
         if node_id not in kept_ids:
             point = summary.delta.point if summary.delta is not None else float("nan")
             decisions.append(
@@ -235,6 +293,8 @@ def decide(
             continue
         if node_id in promoted:
             decisions.append(_node(summary, status="promoted", rule="promoted", kill_reason=None))
+        elif node_id in protected:
+            decisions.append(_node(summary, status="kept", rule="family_slot", kill_reason=None))
         elif node_id == diversity_slot:
             decisions.append(_node(summary, status="kept", rule="diversity", kill_reason=None))
         else:
@@ -378,7 +438,10 @@ def run_from_mlflow(payload: Mapping[str, Any]) -> RunView:
     data = body.get("data") if isinstance(body.get("data"), Mapping) else body
     metrics = _metrics_mapping(data if isinstance(data, Mapping) else {})
     metric = _lookup(metrics, "ndcg@10_graded")
-    delta = _delta_from_metrics(metrics)
+    production = _delta_from_metrics(metrics)
+    lgbm = _named_delta(metrics, "delta_lgbm_point", "delta_lgbm_ci_lo", "delta_lgbm_ci_hi")
+    if lgbm is None:
+        lgbm = production
     ref_deltas = _ref_deltas(metrics, str(tags.get("ref_names", "")))
     # Per-query deltas ride beside the MLflow body, not in the metric map.
     query_source = body.get("query_deltas") or []
@@ -395,7 +458,9 @@ def run_from_mlflow(payload: Mapping[str, Any]) -> RunView:
         parent_id=tags.get("parent_id") or None,
         round=int(tags.get("round") or 0),
         metric=None if metric is None else float(metric),
-        delta=delta,
+        delta=lgbm,
+        delta_vs_production=production,
+        delta_vs_lgbm=lgbm,
         ref_deltas=ref_deltas,
         query_deltas=query_deltas,
         latency_p95_ms=_optional_float(_lookup(metrics, "latency_p95_ms")),
@@ -469,13 +534,19 @@ def _lookup(metrics: Mapping[str, Any], key: str) -> Any:
 
 
 def _delta_from_metrics(metrics: Mapping[str, Any]) -> DeltaVsBaseline | None:
-    point = _lookup(metrics, "delta_point")
+    return _named_delta(metrics, "delta_point", "delta_ci_lo", "delta_ci_hi")
+
+
+def _named_delta(
+    metrics: Mapping[str, Any], point_key: str, low_key: str, high_key: str
+) -> DeltaVsBaseline | None:
+    point = _lookup(metrics, point_key)
     if point is None:
         return None
-    low = _lookup(metrics, "delta_ci_lo")
-    high = _lookup(metrics, "delta_ci_hi")
+    low = _lookup(metrics, low_key)
+    high = _lookup(metrics, high_key)
     if low is None or high is None:
-        raise PrunerError("delta_point requires delta_ci_lo and delta_ci_hi")
+        raise PrunerError(f"{point_key} requires {low_key} and {high_key}")
     return DeltaVsBaseline(point=float(point), ci_lo=float(low), ci_hi=float(high))
 
 
@@ -516,6 +587,8 @@ def _from_attributes(raw: Any) -> RunView:
         "round": getattr(raw, "round", 0),
         "metric": getattr(raw, "metric", None),
         "delta": getattr(raw, "delta", None),
+        "delta_vs_production": getattr(raw, "delta_vs_production", None),
+        "delta_vs_lgbm": getattr(raw, "delta_vs_lgbm", None),
         "ref_deltas": getattr(raw, "ref_deltas", {}) or {},
         "query_deltas": getattr(raw, "query_deltas", []) or [],
         "latency_p95_ms": getattr(raw, "latency_p95_ms", None),
@@ -553,14 +626,16 @@ def _is_lgbm(run: RunView) -> bool:
 
 
 def _summarize(seeds: Sequence[RunView]) -> _Summary:
-    deltas = [seed.delta for seed in seeds if seed.delta is not None]
-    delta = None
-    if deltas:
-        delta = DeltaVsBaseline(
-            point=sum(item.point for item in deltas) / len(deltas),
-            ci_lo=sum(item.ci_lo for item in deltas) / len(deltas),
-            ci_hi=sum(item.ci_hi for item in deltas) / len(deltas),
-        )
+    lgbm = _average_delta(
+        [seed.delta_vs_lgbm for seed in seeds if seed.delta_vs_lgbm is not None]
+    )
+    production = _average_delta(
+        [seed.delta_vs_production for seed in seeds if seed.delta_vs_production is not None]
+    )
+    metrics = [
+        seed.metric for seed in seeds if seed.metric is not None and math.isfinite(seed.metric)
+    ]
+    metric = sum(metrics) / len(metrics) if metrics else None
     names: set[str] = set()
     for seed in seeds:
         names.update(seed.ref_deltas)
@@ -579,12 +654,25 @@ def _summarize(seeds: Sequence[RunView]) -> _Summary:
     return _Summary(
         node_id=seeds[0].node_id,
         family=seeds[0].family,
-        delta=delta,
+        delta=lgbm,
+        delta_vs_production=production,
+        delta_vs_lgbm=lgbm,
+        metric=metric,
         ref_deltas=refs,
         dbu=sum(dbus) if dbus else None,
         latency_p95_ms=max(latencies) if latencies else None,
         query_deltas=_average_query_deltas(seeds),
         seeds=list(seeds),
+    )
+
+
+def _average_delta(deltas: Sequence[DeltaVsBaseline]) -> DeltaVsBaseline | None:
+    if not deltas:
+        return None
+    return DeltaVsBaseline(
+        point=sum(item.point for item in deltas) / len(deltas),
+        ci_lo=sum(item.ci_lo for item in deltas) / len(deltas),
+        ci_hi=sum(item.ci_hi for item in deltas) / len(deltas),
     )
 
 
@@ -639,7 +727,11 @@ def _hard_kill(seeds: Sequence[RunView], summary: _Summary, brief: Brief) -> Nod
 
 
 def _seed_has_metrics(seed: RunView) -> bool:
-    return seed.metric is not None or seed.delta is not None
+    return (
+        seed.metric is not None
+        or seed.delta_vs_lgbm is not None
+        or seed.delta_vs_production is not None
+    )
 
 
 def _bad_number(seed: RunView) -> bool:
@@ -647,10 +739,13 @@ def _bad_number(seed: RunView) -> bool:
         return True
     if seed.metric is not None and not math.isfinite(seed.metric):
         return True
-    if seed.delta is None:
-        return False
-    bounds = (seed.delta.point, seed.delta.ci_lo, seed.delta.ci_hi)
-    return not all(math.isfinite(value) for value in bounds)
+    for delta in (seed.delta_vs_lgbm, seed.delta_vs_production):
+        if delta is None:
+            continue
+        bounds = (delta.point, delta.ci_lo, delta.ci_hi)
+        if not all(math.isfinite(value) for value in bounds):
+            return True
+    return False
 
 
 def _latency_limit(brief: Brief) -> float | None:
@@ -660,44 +755,91 @@ def _latency_limit(brief: Brief) -> float | None:
     return float(serving.latency_p95_ms_per_100_candidates)
 
 
-def _missing_delta(summary: _Summary) -> NodeDecision | None:
-    if summary.delta is not None:
+def _missing_delta(summary: _Summary, rung: str) -> NodeDecision | None:
+    if rung in {"R1", "R2"}:
+        present = summary.delta_vs_lgbm is not None
+    else:
+        present = summary.delta_vs_lgbm is not None or summary.delta_vs_production is not None
+    if present:
         return None
     return _node(
         summary,
         status="failed",
         rule="no_delta",
-        kill_reason="no paired delta versus the same-rung LightGBM reference",
+        kill_reason="no paired delta versus c00",
     )
 
 
 def _floor_kill(summary: _Summary, brief: Brief, rung: str) -> NodeDecision | None:
+    """Wide c00-relative floor. R3 uses the promotion gate instead."""
+
     threshold = _floor_threshold(rung, brief.effect_floor())
-    if threshold is None or summary.delta is None:
+    delta = summary.delta_vs_lgbm
+    if threshold is None or delta is None:
         return None
-    checks = [("lgbm_reference", summary.delta), *summary.ref_deltas.items()]
-    for name, delta in checks:
-        if delta.ci_hi < threshold:
-            return _node(
-                summary,
-                status="killed",
-                rule="below_floor",
-                kill_reason=(
-                    f"below floor at {rung} vs {name}: delta ci_hi {_num(delta.ci_hi)} "
-                    f"is below {_num(threshold)}"
-                ),
-            )
+    if delta.ci_hi < threshold:
+        return _node(
+            summary,
+            status="killed",
+            rule="below_floor",
+            kill_reason=(
+                f"below floor at {rung} vs c00: delta ci_hi {_num(delta.ci_hi)} "
+                f"is below {_num(threshold)}"
+            ),
+        )
     return None
 
 
 def _floor_threshold(rung: str, min_effect: float) -> float | None:
     if rung == "R1":
-        return -min_effect
+        return -2 * min_effect
     if rung == "R2":
-        return 0.0
-    if rung == "R3":
-        return min_effect
+        return -min_effect
     return None
+
+
+def _family_protected(nodes: Sequence[_Summary], random_metric: float | None) -> set[str]:
+    """Top healthy node of each family, when it beats the random baseline."""
+
+    if random_metric is None:
+        return set()
+    by_family: dict[str, list[_Summary]] = {}
+    for node in nodes:
+        by_family.setdefault(node.family, []).append(node)
+    chosen: set[str] = set()
+    for members in by_family.values():
+        best = min(
+            members,
+            key=lambda node: (
+                -(node.metric if node.metric is not None else float("-inf")),
+                node.node_id,
+            ),
+        )
+        if best.metric is not None and best.metric > random_metric:
+            chosen.add(best.node_id)
+    return chosen
+
+
+def _random_metric(baselines: Sequence[RunView]) -> float | None:
+    values = [
+        run.metric
+        for run in baselines
+        if run.metric is not None and (run.node_id == "random" or run.family == "random")
+    ]
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def _archive_summary(baselines: Sequence[RunView]) -> _Summary | None:
+    seeds = [
+        run
+        for run in baselines
+        if run.node_id in _ARCHIVE_IDS or run.family == "lgbm_reference"
+    ]
+    if not seeds:
+        return None
+    return _summarize(seeds)
 
 
 def _dominance_kills(
@@ -826,10 +968,41 @@ def _halve(nodes: Sequence[_Summary], rung: str) -> tuple[list[_Summary], str | 
     return kept, slot
 
 
-def _promote(kept: Sequence[_Summary]) -> list[str]:
-    eligible = [node for node in kept if node.delta is not None and node.delta.ci_lo > 0]
-    eligible.sort(key=lambda node: (-node.delta.point, node.node_id))  # type: ignore[union-attr]
-    return [node.node_id for node in eligible[:3]]
+def _promote(kept: Sequence[_Summary], brief: Brief, archive: _Summary | None) -> list[str]:
+    """Production gate for every contender. Candidates must also beat c00."""
+
+    winners = [
+        node
+        for node in kept
+        if node.node_id not in _ARCHIVE_IDS
+        and _passes_production(node, brief)
+        and node.delta_vs_lgbm is not None
+        and node.delta_vs_lgbm.ci_lo > 0
+    ]
+    def _promotion_key(node: _Summary) -> tuple[float, str]:
+        production = node.delta_vs_production
+        point = production.point if production is not None else float("-inf")
+        return (-point, node.node_id)
+
+    winners.sort(key=_promotion_key)
+    if winners:
+        return [node.node_id for node in winners[:3]]
+    if archive is not None and _passes_production(archive, brief):
+        return ["c00"]
+    for node in kept:
+        if node.node_id in _ARCHIVE_IDS and _passes_production(node, brief):
+            return ["c00"]
+    return []
+
+
+def _passes_production(node: _Summary, brief: Brief) -> bool:
+    delta = node.delta_vs_production
+    if delta is None or delta.point < brief.effect_floor() or not delta.ci_lo > 0:
+        return False
+    limit = _latency_limit(brief)
+    if limit is not None and node.latency_p95_ms is not None and node.latency_p95_ms > limit:
+        return False
+    return True
 
 
 def _rank_key(node: _Summary) -> tuple[float, float, float, str]:
@@ -852,7 +1025,9 @@ def _node(
         status=status,
         rule=rule,
         kill_reason=kill_reason,
-        delta=summary.delta,
+        delta=summary.delta_vs_lgbm,
+        delta_vs_production=summary.delta_vs_production,
+        delta_vs_lgbm=summary.delta_vs_lgbm,
         ref_deltas=summary.ref_deltas,
         seeds=[seed.seed for seed in summary.seeds],
     )
@@ -874,7 +1049,8 @@ def _ledger_from(run_id: str, view: RunView, decision: NodeDecision) -> LedgerRo
         rung=view.rung,
         seed=view.seed,
         metric=metric,
-        delta_vs_baseline=decision.delta,
+        delta_vs_production=decision.delta_vs_production,
+        delta_vs_lgbm=decision.delta_vs_lgbm or decision.delta,
         dbu=view.dbu,
         wall_min=view.wall_min,
         latency_p95_ms=view.latency_p95_ms,

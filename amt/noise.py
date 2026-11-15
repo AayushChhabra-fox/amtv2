@@ -76,6 +76,7 @@ class Round0Cell(BaseModel):
     delta_point: float | None = None
     delta_ci_lo: float | None = None
     delta_ci_hi: float | None = None
+    latency_p95_ms: float | None = Field(default=None, ge=0)
 
 
 class BaselineNoise(BaseModel):

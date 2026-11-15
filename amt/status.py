@@ -65,7 +65,8 @@ def _node_table(rows: list[LedgerRow], live: list[str]) -> list[str]:
         if row is None:
             lines.append(f"{node_id:<16} {'-':<16} {'-':<6} {'pending':<10} {'-':>10}")
             continue
-        delta = "-" if row.delta_vs_baseline is None else f"{row.delta_vs_baseline.point:.4f}"
+        shown = row.delta_vs_lgbm or row.delta_vs_production
+        delta = "-" if shown is None else f"{shown.point:.4f}"
         lines.append(
             f"{row.node_id:<16} {row.family:<16} {row.rung:<6} {row.status:<10} {delta:>10}"
         )

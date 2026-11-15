@@ -147,14 +147,14 @@ def _round(
 
 def _full_script(tmp_path: Path, run_id: str = "search") -> None:
     calls: list[dict] = []
-    calls.extend(_round("c00", "draft"))
+    calls.extend(_round("c01", "draft"))
     calls.extend(
-        _round("c01", "improve", parent="c00", change="add one recency interaction")
+        _round("c02", "improve", parent="c01", change="add one recency interaction")
     )
     calls.extend(
-        _round("c02", "improve", parent="c01", change="drop the noisiest numeric feature")
+        _round("c03", "improve", parent="c02", change="drop the noisiest numeric feature")
     )
-    calls.extend(_round("c03", "combine", parent="c02", change="blend scores with c01"))
+    calls.extend(_round("c04", "combine", parent="c03", change="blend scores with c02"))
     _script(tmp_path, run_id, calls)
 
 
@@ -178,18 +178,19 @@ def test_fake_loop_reaches_report(tmp_path: Path, monkeypatch) -> None:
     _full_script(tmp_path)
     state = run_brief(brief, root=tmp_path)
     assert state.stage == "REPORT"
-    assert state.promoted == ["c03"]
-    assert FakeJobs(tmp_path).submit_count() == 14
+    assert state.promoted == ["c04"]
+    assert FakeJobs(tmp_path).submit_count() == 13
+    assert (tmp_path / "runs" / "search" / "candidates" / "c00" / "model.py").is_file()
     assert (tmp_path / "runs" / "search" / "round_1.md").is_file()
     digest = (tmp_path / "runs" / "search" / "round_1.md").read_text(encoding="utf-8")
     assert "Spent" in digest
-    assert "c00" in digest
+    assert "c01" in digest
     report = (tmp_path / "runs" / "search" / "report.md").read_text(encoding="utf-8")
     assert "c03" in report
     assert audit_rows(tmp_path, "search") == []
     again = run_brief(brief, root=tmp_path)
     assert again.stage == "REPORT"
-    assert FakeJobs(tmp_path).submit_count() == 14
+    assert FakeJobs(tmp_path).submit_count() == 13
 
 
 def test_resume_does_not_resubmit_the_search_job(tmp_path: Path, monkeypatch) -> None:
@@ -203,14 +204,14 @@ def test_resume_does_not_resubmit_the_search_job(tmp_path: Path, monkeypatch) ->
     assert first.stage == "WAIT"
     assert FakeJobs(tmp_path).submit_count() == 1
     saved = json.loads((tmp_path / "runs" / "search" / "state.json").read_text(encoding="utf-8"))
-    assert saved["submitted_jobs"]["c00/R1/0"]["job_run_id"] == "fake-1"
+    assert saved["submitted_jobs"]["c01/R1/0"]["job_run_id"] == "fake-1"
 
     monkeypatch.delenv("AMT_STOP_AFTER")
     second = run_brief(brief, root=tmp_path)
     assert second.stage == "REPORT"
-    assert FakeJobs(tmp_path).submit_count() == 14
+    assert FakeJobs(tmp_path).submit_count() == 13
     resumed = json.loads((tmp_path / "runs" / "search" / "state.json").read_text(encoding="utf-8"))
-    assert resumed["submitted_jobs"]["c00/R1/0"]["job_run_id"] == "fake-1"
+    assert resumed["submitted_jobs"]["c01/R1/0"]["job_run_id"] == "fake-1"
 
 
 def test_debug_cap_escalates(tmp_path: Path, monkeypatch) -> None:
@@ -220,15 +221,15 @@ def test_debug_cap_escalates(tmp_path: Path, monkeypatch) -> None:
     brief = _sign(tmp_path, run_id="debug")
     bad = "import pyspark\n\n"
     calls = [
-        {"role": "planner", "output": {"candidates": [_candidate("c00", "draft")]}},
-        {"role": "critic", "output": {"verdicts": [_pass("c00")]}},
+        {"role": "planner", "output": {"candidates": [_candidate("c01", "draft")]}},
+        {"role": "critic", "output": {"verdicts": [_pass("c01")]}},
     ]
     for _ in range(4):
         calls.append(
             {
                 "role": "implementer",
-                "node_id": "c00",
-                "files": {"runs/debug/candidates/c00/model.py": bad},
+                "node_id": "c01",
+                "files": {"runs/debug/candidates/c01/model.py": bad},
             }
         )
     _script(tmp_path, "debug", calls)
@@ -236,7 +237,7 @@ def test_debug_cap_escalates(tmp_path: Path, monkeypatch) -> None:
     assert state.stage == "ESCALATE"
     text = (tmp_path / "runs" / "debug" / "ESCALATE.md").read_text(encoding="utf-8")
     assert "debug cap" in text
-    log = (tmp_path / "runs" / "debug" / "candidates" / "c00" / "debug_log.md").read_text(
+    log = (tmp_path / "runs" / "debug" / "candidates" / "c01" / "debug_log.md").read_text(
         encoding="utf-8"
     )
     assert "attempt 3" in log
@@ -249,11 +250,11 @@ def test_critic_revision_cap_escalates(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("AMT_GIT_SHA", "abc123")
     brief = _sign(tmp_path, run_id="critic")
     revise = {
-        "candidate_id": "c00",
+        "candidate_id": "c01",
         "decision": "REVISE",
         "reason": "The proposal uses a feature that is not available at serve time.",
     }
-    proposal = {"candidates": [_candidate("c00", "draft")]}
+    proposal = {"candidates": [_candidate("c01", "draft")]}
     _script(
         tmp_path,
         "critic",
@@ -297,7 +298,7 @@ def test_budget_refusal_does_not_submit(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("AMT_AGENT_BACKEND", "fake")
     monkeypatch.setenv("AMT_GIT_SHA", "abc123")
     brief = _sign(tmp_path, total_dbu=0.05, run_id="budget")
-    _script(tmp_path, "budget", _round("c00", "draft"))
+    _script(tmp_path, "budget", _round("c01", "draft"))
     state = run_brief(brief, root=tmp_path)
     assert state.stage == "ESCALATE"
     assert "refusing submit" in (tmp_path / "runs" / "budget" / "ESCALATE.md").read_text()
@@ -313,8 +314,8 @@ def test_every_stage_pauses_until_approve(tmp_path: Path, monkeypatch) -> None:
         tmp_path,
         "gate",
         [
-            {"role": "planner", "output": {"candidates": [_candidate("c00", "draft")]}},
-            {"role": "critic", "output": {"verdicts": [_pass("c00")]}},
+            {"role": "planner", "output": {"candidates": [_candidate("c01", "draft")]}},
+            {"role": "critic", "output": {"verdicts": [_pass("c01")]}},
         ],
     )
     first = run_brief(brief, root=tmp_path)
@@ -330,7 +331,8 @@ def test_every_stage_pauses_until_approve(tmp_path: Path, monkeypatch) -> None:
     assert third.stage == "SPEC"
     assert third.awaiting_approval is True
     assert third.approval_gate == "CRITIQUE"
-    assert not (tmp_path / "runs" / "gate" / "candidates" / "c00" / "model.py").exists()
+    assert (tmp_path / "runs" / "gate" / "candidates" / "c00" / "model.py").is_file()
+    assert not (tmp_path / "runs" / "gate" / "candidates" / "c01" / "model.py").exists()
 
 
 def test_round_shortlist_pauses_before_compute(tmp_path: Path, monkeypatch) -> None:
@@ -338,12 +340,13 @@ def test_round_shortlist_pauses_before_compute(tmp_path: Path, monkeypatch) -> N
     monkeypatch.setenv("AMT_AGENT_BACKEND", "fake")
     monkeypatch.setenv("AMT_GIT_SHA", "abc123")
     brief = _sign(tmp_path, run_id="short", approval_mode="round_shortlist")
-    _script(tmp_path, "short", _round("c00", "draft"))
+    _script(tmp_path, "short", _round("c01", "draft"))
     state = run_brief(brief, root=tmp_path)
     assert state.stage == "SPEC"
     assert state.awaiting_approval is True
     assert state.approval_gate == "CRITIQUE"
-    assert not (tmp_path / "runs" / "short" / "candidates" / "c00" / "model.py").exists()
+    assert (tmp_path / "runs" / "short" / "candidates" / "c00" / "model.py").is_file()
+    assert not (tmp_path / "runs" / "short" / "candidates" / "c01" / "model.py").exists()
     assert FakeJobs(tmp_path).submit_count() == 0
 
 
