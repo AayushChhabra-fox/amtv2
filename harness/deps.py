@@ -17,41 +17,10 @@ from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, distributions, packages_distributions, version
 from pathlib import Path
 
+from harness.registry import BASE_PACKAGES, DENIED_PACKAGES
+
 _PIN = re.compile(
     r"^([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)==([A-Za-z0-9][A-Za-z0-9.*+!-]*)$"
-)
-
-# Distribution names already provided by the training environment. A candidate
-# must not pin a different build of these.
-BASE_PACKAGES = frozenset(
-    {
-        "numpy",
-        "pandas",
-        "polars",
-        "lightgbm",
-        "xgboost",
-        "catboost",
-        "torch",
-        "scikit-learn",
-        "sentence-transformers",
-        "mlflow",
-    }
-)
-
-# Same clients the preflight check refuses to import, plus Spark.
-DENIED_PACKAGES = frozenset(
-    {
-        "pyspark",
-        "spark",
-        "dbutils",
-        "requests",
-        "urllib3",
-        "httpx",
-        "aiohttp",
-        "boto3",
-        "socket",
-        "subprocess",
-    }
 )
 
 _MAX_PINS = 10

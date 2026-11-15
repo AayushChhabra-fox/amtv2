@@ -23,6 +23,7 @@ from amt.schemas import Brief, load_brief
 from amt.snapshot import SnapshotError, upload_candidate
 from amt.submit import lgbm_baseline_view, missing_baseline_message
 from harness.interface import RankingFrame
+from harness.registry import pypi_libraries
 from harness.scores_io import align_scores, read_scores, write_scores
 from tests.test_pruner import _baseline, _brief, _run
 
@@ -38,7 +39,8 @@ def test_resolve_job_ids_uses_the_cache_and_env_override(tmp_path: Path, monkeyp
     found = resolve_job_ids(tmp_path)
     assert found["train"] == "override-train"
     assert found["confirm"] == "id-confirm"
-    assert found["hello_train"] == "id-hello_train"
+    assert "hello_train" not in found
+    assert "hello_train" not in JOB_NAMES
 
 
 def test_fake_submit_rejects_undeclared_parameters(tmp_path: Path) -> None:
@@ -310,16 +312,15 @@ def test_fixed_cluster_payload_has_no_new_cluster() -> None:
     assert body["tasks"][0]["existing_cluster_id"] == "cluster-1"
     assert "new_cluster" not in body["tasks"][0]
     libraries = body["tasks"][0]["libraries"]
-    assert {lib["pypi"]["package"] for lib in libraries} == {
-        "lightgbm",
-        "mlflow",
-        "xgboost",
-        "torch",
-        "catboost",
-    }
+    assert libraries == pypi_libraries()
     torch = next(lib["pypi"] for lib in libraries if lib["pypi"]["package"] == "torch")
     assert torch["repo"] == "https://download.pytorch.org/whl/cpu"
     assert all("whl" not in lib for lib in libraries)
+    for job in ("train", "confirm", "final_holdout", "build_dataset"):
+        text = (ROOT / "resources" / f"{job}.job.yml").read_text(encoding="utf-8")
+        payload = yaml.safe_load(text)
+        listed = payload["resources"]["jobs"][job]["tasks"][0]["libraries"]
+        assert [item for item in listed if "pypi" in item] == pypi_libraries()
     rendered = " ".join(body["tasks"][0]["spark_python_task"]["parameters"])
     assert "whl" not in rendered
 

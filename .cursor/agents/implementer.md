@@ -18,7 +18,7 @@ Read `spec.md`, `harness/interface.py`, and, when the prompt includes them, the 
 Implement the Ranker protocol: `fit(train, valid, ctx)`, `score(frame)`, `save(path)`, `load(path)`.
 
 - `fit` and `score` may use only the frames passed in. `score` must not read labels.
-- The standard library and the base scientific stack (numpy, pandas, polars, lightgbm, xgboost, catboost, torch, sklearn, sentence-transformers) are already installed.
+- The standard library and the base scientific stack (numpy, pandas, pyarrow, scipy, lightgbm, xgboost, catboost, torch, sklearn) are already installed. Read numeric columns with `frame.numeric_matrix()` and string `feat__` columns with `frame.categorical_feature_names()`.
 - Any other PyPI package goes in `candidates/<id>/requirements.txt` as exact `name==version` pins, at most 10 lines. Justify each pin in `spec.md`. Do not re-pin a base package, and do not use a URL, a git install, or an extra index.
 - The harness installs that file. Do not call pip, subprocess, or the network yourself.
 - Do not import or call Spark, dbutils, subprocess, sockets, or HTTP clients. A package that talks to the network at score time is not allowed.
@@ -26,5 +26,4 @@ Implement the Ranker protocol: `fit(train, valid, ctx)`, `score(frame)`, `save(p
 - Do not open a path outside this directory. `save` and `load` may open the path argument they are given.
 - An improvement applies the one change named in the spec and leaves the rest of the parent model alone.
 - A debug call reads the fix chain and changes only what the latest failure requires.
-
-For the walking-skeleton candidate `c00`, write a scikit-learn logistic regression with `fit`, `score`, `save`, and `load`.
+- Define `class Ranker` with `fit`, `score`, `save`, and `load`. `c00` is reserved for the LightGBM reference.

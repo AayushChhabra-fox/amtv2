@@ -5,7 +5,6 @@ import yaml
 
 from amt.jobs_backend import FakeJobs
 from amt.orchestrator import run_brief
-from amt.status import audit_rows
 
 
 def _write_brief(root: Path) -> Path:
@@ -17,13 +16,14 @@ def _write_brief(root: Path) -> Path:
                 "name": "toy",
                 "run_id": "toy",
                 "approval_mode": "none",
+                "k": 1,
                 "candidate": {
-                    "id": "c00",
+                    "id": "c01",
                     "family": "linear",
-                    "rung": "R0",
+                    "rung": "R1",
                     "seed": 0,
                     "batch": "toy",
-                    "claim": "logistic regression",
+                    "claim": "ridge ranker on numeric feat columns",
                     "est_dbu": 0.1,
                 },
                 "budget": {"total_dbu": 10},
@@ -42,15 +42,19 @@ def test_resume_does_not_resubmit(tmp_path: Path, monkeypatch) -> None:
     assert first.stage == "WAIT"
     assert FakeJobs(tmp_path).submit_count() == 1
     saved = json.loads((tmp_path / "runs" / "toy" / "state.json").read_text())
-    assert saved["submitted_jobs"]["c00/R0/0"]["job_run_id"] == "fake-1"
+    assert saved["submitted_jobs"]["c01/R1/0"]["job_run_id"] == "fake-1"
 
-    monkeypatch.delenv("AMT_STOP_AFTER")
+    monkeypatch.setenv("AMT_STOP_AFTER", "WAIT")
     second = run_brief(brief, root=tmp_path)
-    assert second.stage == "REPORT"
+    assert second.stage == "WAIT"
+    assert second.submitted_jobs["c01/R1/0"]["result_state"] == "SUCCESS"
     assert second.revisions == 0
     assert FakeJobs(tmp_path).submit_count() == 1
-    assert (tmp_path / "candidates" / "c00" / "model.py").is_file()
-    assert audit_rows(tmp_path, "toy") == []
+    saved = json.loads((tmp_path / "runs" / "toy" / "state.json").read_text())
+    assert saved["submitted_jobs"]["c01/R1/0"]["job_run_id"] == "fake-1"
+    model = (tmp_path / "candidates" / "c01" / "model.py").read_text(encoding="utf-8")
+    assert "class Ranker" in model
+    assert "hello_train" not in FakeJobs(tmp_path).submitted_jobs()
 
 
 def test_idempotent_token_returns_same_run(tmp_path: Path) -> None:
@@ -92,6 +96,11 @@ def test_completed_run_is_a_no_op(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("AMT_JOBS_BACKEND", "fake")
     monkeypatch.setenv("AMT_GIT_SHA", "abc123")
     brief = _write_brief(tmp_path)
-    run_brief(brief, root=tmp_path)
-    run_brief(brief, root=tmp_path)
-    assert FakeJobs(tmp_path).submit_count() == 1
+    first = run_brief(brief, root=tmp_path)
+    assert first.stage in {"REPORT", "ESCALATE"}
+    count = FakeJobs(tmp_path).submit_count()
+    assert count >= 1
+    assert "hello_train" not in FakeJobs(tmp_path).submitted_jobs()
+    second = run_brief(brief, root=tmp_path)
+    assert second.stage == first.stage
+    assert FakeJobs(tmp_path).submit_count() == count

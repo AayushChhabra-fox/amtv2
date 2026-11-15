@@ -58,6 +58,71 @@ def _pair(
     return rows, np.asarray(scores, dtype=float)
 
 
+def test_frame_is_columnar_and_numeric_matrix_is_aligned() -> None:
+    frame = _frame(
+        [
+            {
+                "query_id": "q2",
+                "item_id": "b",
+                "label": 1,
+                "feat__num__x": None,
+                "feat__cat__color": "red",
+                "ref__production": 0.2,
+            },
+            {
+                "query_id": "q1",
+                "item_id": "a",
+                "label": 3,
+                "feat__num__x": float("nan"),
+                "feat__cat__color": None,
+                "ref__production": 0.1,
+            },
+            {
+                "query_id": "q1",
+                "item_id": "c",
+                "label": 0,
+                "feat__num__x": 1.5,
+                "feat__cat__color": "blue",
+                "ref__production": 0.4,
+            },
+        ]
+    )
+    assert [row["query_id"] for row in frame.rows] == ["q1", "q1", "q2"]
+    assert frame.categorical_feature_names() == ["feat__cat__color"]
+    matrix, names = frame.numeric_matrix()
+    assert names == ["feat__num__x"]
+    assert matrix.shape == (3, 1)
+    assert matrix[:, 0].tolist() == [0.0, 1.5, 0.0]
+    aligned, columns = frame.numeric_matrix(["missing", "feat__num__x"])
+    assert columns == ["missing", "feat__num__x"]
+    assert aligned[1].tolist() == [0.0, 1.5]
+    hidden = frame.without_labels()
+    assert "label" not in hidden.columns
+    assert list(frame.to_pandas()["item_id"]) == ["a", "c", "b"]
+    assert frame.group_sizes() == [2, 1]
+
+
+def test_parquet_split_filters_query_ids(tmp_path: Path) -> None:
+    import pandas as pd
+
+    from harness.train import read_split_frame
+
+    path = tmp_path / "train.parquet"
+    pd.DataFrame(
+        [
+            {"query_id": "q1", "item_id": "a", "label": 1},
+            {"query_id": "q2", "item_id": "b", "label": 0},
+        ]
+    ).to_parquet(path, index=False)
+
+    class _Spark:
+        def sql(self, _text: str):
+            raise AssertionError("parquet split should not scan Spark")
+
+    frame = read_split_frame(_Spark(), "`cat`.`sch`.`toy_train`", ["q2"], path)
+    assert frame["query_id"].tolist() == ["q2"]
+
+
 def test_graded_ndcg_mrr_coverage_and_bootstrap() -> None:
     perfect_rows, perfect_scores = _pair("q1", "2026-01-01", 3, (1.0, 0.0))
     perfect = _frame(perfect_rows)

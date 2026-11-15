@@ -294,12 +294,12 @@ class LinearFittedRanker:
         labels = np.asarray(train.labels(), dtype=float)
         if self.shuffle_labels:
             labels = np.random.default_rng(int(ctx.seed) + 17).permutation(labels)
-        self.weights = _ridge(_align(train, self.columns), labels)
+        self.weights = _ridge(train.numeric_matrix(self.columns)[0], labels)
 
     def score(self, frame: RankingFrame) -> np.ndarray:
         if self.weights is None:
             raise RuntimeError("linear_fitted has not been fit")
-        return _align(frame, self.columns) @ self.weights
+        return frame.numeric_matrix(self.columns)[0] @ self.weights
 
     def save(self, path: str) -> None:
         save_ranker(self, path)
@@ -396,7 +396,7 @@ class _NumpyMLP:
     def score(self, frame: RankingFrame) -> np.ndarray:
         if self.w1 is None or self.mean is None or self.std is None or self.w2 is None:
             raise RuntimeError("neural ladder has not been fit")
-        scaled = (_align(frame, self.columns) - self.mean) / self.std
+        scaled = (frame.numeric_matrix(self.columns)[0] - self.mean) / self.std
         activated = np.maximum(scaled @ self.w1 + self.b1, 0.0)
         return activated @ self.w2 + self.b2
 
@@ -469,17 +469,6 @@ def _select(frame: RankingFrame, columns: list[str]) -> RankingFrame:
     keep.update({"query_id", "item_id", "label", "event_day", "query_ts"})
     rows = [{key: value for key, value in row.items() if key in keep} for row in frame.rows]
     return RankingFrame(rows)
-
-
-def _align(frame: RankingFrame, columns: list[str]) -> np.ndarray:
-    matrix = np.zeros((len(frame), len(columns)), dtype=float)
-    for column_index, name in enumerate(columns):
-        for row_index, row in enumerate(frame.rows):
-            raw = row.get(name)
-            if raw is None:
-                continue
-            matrix[row_index, column_index] = float(raw)
-    return matrix
 
 
 def _ridge(features: np.ndarray, labels: np.ndarray, l2: float = 1e-3) -> np.ndarray:

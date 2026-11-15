@@ -68,6 +68,16 @@ def test_constraints_pin_the_installed_base() -> None:
     assert "numpy==" in text
 
 
+def test_pandas_and_pyarrow_are_base_and_cannot_be_repinned(tmp_path: Path) -> None:
+    candidate = tmp_path / "c"
+    _write(candidate / "model.py", "import pandas\nimport pyarrow\n")
+    assert static_check(candidate) == []
+    with pytest.raises(RequirementsError, match="base environment"):
+        parse_requirements(_write(candidate / "requirements.txt", "pandas==2.2.2\n"))
+    with pytest.raises(RequirementsError, match="base environment"):
+        parse_requirements(_write(tmp_path / "arrow.txt", "pyarrow==16.0.0\n"))
+
+
 def test_static_check_allows_a_declared_import(tmp_path: Path) -> None:
     directory = tmp_path / "candidates" / "c00"
     _write(
@@ -102,7 +112,8 @@ def test_preflight_installs_declared_requirements_before_smoke(
 
     smoke = preflight_candidate(directory)
     assert calls == [str(directory)]
-    assert smoke["log_loss"] < smoke["baseline_log_loss"]
+    assert smoke["rows"] == 120
+    assert smoke["deterministic"] == 1.0
 
 
 def test_train_installs_before_import(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

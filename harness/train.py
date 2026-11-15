@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 
 def _bundle_root() -> Path:
@@ -52,7 +53,7 @@ from harness.baselines import (  # noqa: E402
     RandomRanker,
     ReferenceScoreRanker,
 )
-from harness.data.build_dataset import project_root, resolve_spec  # noqa: E402
+from harness.data.build_dataset import project_root, resolve_spec, split_parquet_path  # noqa: E402
 from harness.data.contract import HOLDOUT_SPLITS, SPLIT_NAMES, load_spec  # noqa: E402
 from harness.data.sampling import choose_query_ids, query_ids_hash, query_times  # noqa: E402
 from harness.deps import activate_candidate_requirements  # noqa: E402
@@ -81,7 +82,7 @@ def load_rows(path: Path) -> list[dict]:
     return rows
 
 
-def load_rung_from_spark(
+def load_rung(
     spec,
     manifest: dict,
     rung: str,
@@ -91,14 +92,23 @@ def load_rung_from_spark(
     confirmation: bool,
     eval_split: str,
 ) -> tuple[RankingFrame, RankingFrame]:
-    """Read Delta splits written by the build job. Holdouts are read only when confirming."""
+    """Read one rung from volume Parquet, or from Spark when the file is absent.
+
+    Holdouts are read only when confirming. Parquet lives at
+    ``<volume>/<spec>/<spec_hash>/splits/<split>.parquet``. The Spark fallback
+    uses ``toPandas`` rather than collecting rows one at a time.
+    """
 
     from pyspark.sql import SparkSession
 
     spark = SparkSession.getActiveSession() or SparkSession.builder.getOrCreate()
+    spec_hash = spec.spec_hash()
 
     def table(split: str) -> str:
         return f"`{catalog}`.`{schema}`.`{spec.name}_{split}`"
+
+    def parquet(split: str) -> Path:
+        return split_parquet_path(catalog, schema, spec.name, spec_hash, split)
 
     def choose(split: str, rule: dict) -> list:
         id_rows = spark.sql(
@@ -107,22 +117,12 @@ def load_rung_from_spark(
         times = query_times([row.asDict(recursive=True) for row in id_rows])
         return choose_query_ids(times, rule)
 
-    def pull(split: str, query_ids: list | None) -> list[dict]:
-        if query_ids is None:
-            frame = spark.sql(f"SELECT * FROM {table(split)}")
-        else:
-            spark.createDataFrame(
-                [(str(query_id),) for query_id in query_ids],
-                ["query_id"],
-            ).createOrReplaceTempView("amt_keep_ids")
-            frame = spark.sql(
-                f"SELECT t.* FROM {table(split)} AS t "
-                "INNER JOIN amt_keep_ids AS k ON t.query_id = k.query_id"
-            )
-        return [record.asDict(recursive=True) for record in frame.toLocalIterator()]
+    def pull(split: str, query_ids: list | None) -> RankingFrame:
+        frame = read_split_frame(spark, table(split), query_ids, parquet(split))
+        return RankingFrame.from_pandas(frame)
 
     if confirmation:
-        return RankingFrame(pull("train", None)), RankingFrame(pull(eval_split, None))
+        return pull("train", None), pull(eval_split, None)
     rules = manifest["samples"][rung]
     if rules["train"]["split"] != "train" or rules["eval"]["split"] != "search_val":
         raise ValueError("search rungs only sample train and search_val")
@@ -132,7 +132,29 @@ def load_rung_from_spark(
         raise RuntimeError("train sample does not match the dataset manifest")
     if query_ids_hash(eval_ids) != rules["eval"]["query_ids_hash"]:
         raise RuntimeError("eval sample does not match the dataset manifest")
-    return RankingFrame(pull("train", train_ids)), RankingFrame(pull("search_val", eval_ids))
+    return pull("train", train_ids), pull("search_val", eval_ids)
+
+
+def read_split_frame(spark, table: str, query_ids: list | None, parquet_path: Path) -> pd.DataFrame:
+    """Filtered split as a DataFrame. Volume Parquet wins over a Spark scan."""
+
+    if parquet_path.is_file():
+        frame = pd.read_parquet(parquet_path)
+        if query_ids is None:
+            return frame
+        keep = {str(item) for item in query_ids}
+        return frame.loc[frame["query_id"].astype(str).isin(keep)].reset_index(drop=True)
+    if query_ids is None:
+        spark_frame = spark.sql(f"SELECT * FROM {table}")
+    else:
+        spark.createDataFrame(
+            [(str(query_id),) for query_id in query_ids],
+            ["query_id"],
+        ).createOrReplaceTempView("amt_keep_ids")
+        spark_frame = spark.sql(
+            f"SELECT t.* FROM {table} AS t INNER JOIN amt_keep_ids AS k ON t.query_id = k.query_id"
+        )
+    return spark_frame.toPandas()
 
 
 def load_dataset(dataset_dir: Path) -> tuple[dict, dict[str, list[dict]]]:
@@ -457,7 +479,7 @@ def _execute(args: argparse.Namespace) -> None:
         )
     else:
         manifest = json.loads((dataset_dir / "manifest.json").read_text())
-        train, evaluation = load_rung_from_spark(
+        train, evaluation = load_rung(
             spec,
             manifest,
             args.rung,

@@ -139,6 +139,16 @@ class SparkExecutor:
     def write_table(self, table: str, select_sql: str) -> None:
         self.spark.sql(f"CREATE OR REPLACE TABLE {table} AS {select_sql}")
 
+    def write_parquet(self, table: str, path: str) -> None:
+        """Copy a Delta split to a volume Parquet file when the session can."""
+
+        frame = self.spark.table(table)
+        writer = getattr(frame, "write", None)
+        parquet = getattr(writer, "parquet", None) if writer is not None else None
+        if not callable(parquet):
+            return
+        writer.mode("overwrite").parquet(path)
+
     def drop_table(self, table: str) -> None:
         self.spark.sql(f"DROP TABLE IF EXISTS {table}")
 
@@ -310,6 +320,20 @@ def build_local(
     return manifest
 
 
+def split_parquet_path(
+    catalog: str, schema: str, spec_name: str, spec_hash: str, split: str
+) -> Path:
+    """``<volume>/<spec>/<spec_hash>/splits/<split>.parquet`` next to the Delta tables."""
+
+    return (
+        Path(f"/Volumes/{catalog}/{schema}/amt_artifacts")
+        / spec_name
+        / spec_hash
+        / "splits"
+        / f"{split}.parquet"
+    )
+
+
 def _table_name(catalog: str, schema: str, dataset: str, split: str) -> str:
     parts = [catalog, schema, f"{dataset}_{split}"]
     if not all(part.replace("_", "").isalnum() for part in parts):
@@ -432,6 +456,8 @@ def build_spark(
         table = _table_name(catalog, schema, spec.name, split_name)
         executor.write_table(table, filtered_sql(assembled_sql, spec, start, end))
         written[split_name] = table
+        parquet = split_parquet_path(catalog, schema, spec.name, spec.spec_hash(), split_name)
+        executor.write_parquet(table, parquet.as_posix())
 
     summaries = {}
     split_meta = {}

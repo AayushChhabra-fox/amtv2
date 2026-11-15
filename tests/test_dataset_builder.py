@@ -455,6 +455,42 @@ def test_spark_build_scans_sources_once_and_stages_fragments(tmp_path: Path) -> 
     assert len(dropped) == len(fragments) + 1
 
 
+def test_spark_build_writes_one_parquet_file_per_split(tmp_path: Path) -> None:
+    from harness.data.build_dataset import build_spark
+
+    spec = load_spec(ROOT / "datasets" / "nfy_article_rerank_demo").model_copy(
+        update={"checks": []}
+    )
+    paths: list[str] = []
+
+    class _ParquetWriter:
+        def mode(self, _mode: str) -> _ParquetWriter:
+            return self
+
+        def parquet(self, path: str) -> None:
+            paths.append(path)
+
+        def saveAsTable(self, _name: str) -> None:
+            return None
+
+    class _Spark(_RecordingSpark):
+        def table(self, _name: str) -> _Frame:
+            frame = _Frame()
+            frame.write = _ParquetWriter()
+            return frame
+
+    build_spark(spec, _Spark(), catalog="cat", schema="sch", output_dir=tmp_path)
+    prefix = f"/Volumes/cat/sch/amt_artifacts/{spec.name}/{spec.spec_hash()}/splits/"
+    assert len(paths) == 4
+    assert all(path.startswith(prefix) for path in paths)
+    assert {Path(path).name for path in paths} == {
+        "train.parquet",
+        "search_val.parquet",
+        "select_holdout.parquet",
+        "final_holdout.parquet",
+    }
+
+
 class _V2Frame(_Frame):
     columns = [
         "query_id",

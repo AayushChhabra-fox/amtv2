@@ -12,43 +12,20 @@ import ast
 import importlib.util
 import re
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
 
 from harness.deps import RequirementsError, env_root, import_names, install
+from harness.interface import FitContext, RankingFrame
+from harness.registry import (
+    BASE_IMPORTS,
+    DENIED_IMPORTS,
+    HF_DOWNLOAD_CALLS,
+    offline_weights_allowed,
+)
 
-BASE_IMPORTS = frozenset(
-    {
-        "numpy",
-        "pandas",
-        "polars",
-        "lightgbm",
-        "xgboost",
-        "catboost",
-        "torch",
-        "sklearn",
-        "sentence_transformers",
-    }
-)
-_DENIED = frozenset(
-    {
-        "pyspark",
-        "spark",
-        "dbutils",
-        "subprocess",
-        "socket",
-        "requests",
-        "urllib",
-        "http",
-        "ftplib",
-        "smtplib",
-        "webbrowser",
-        "httpx",
-        "aiohttp",
-        "boto3",
-    }
-)
 _HOLDOUTS = ("select_holdout", "final_holdout")
 _TABLE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*\b")
 _NAME_BAN = frozenset({"spark", "dbutils"})
@@ -133,6 +110,7 @@ def _walk(tree: ast.AST, rel: str, allowed: frozenset[str]) -> list[str]:
             violations.append(f"{rel} references {node.attr}")
         elif isinstance(node, ast.Call):
             violations.extend(_call(node, rel))
+            violations.extend(_hub_download(node, rel))
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             if _TABLE.search(node.value):
                 violations.append(f"{rel} names a table ({node.value})")
@@ -141,7 +119,7 @@ def _walk(tree: ast.AST, rel: str, allowed: frozenset[str]) -> list[str]:
 
 def _import(rel: str, module: str, allowed: frozenset[str]) -> list[str]:
     root = module.split(".", 1)[0]
-    if root in _DENIED:
+    if root in DENIED_IMPORTS:
         return [f"{rel} imports {root}, which is blocked"]
     if root in allowed:
         return []
@@ -203,13 +181,59 @@ def _call_name(func: ast.AST) -> str:
     return ""
 
 
-def _log_loss(labels: np.ndarray, scores: np.ndarray) -> float:
-    clipped = np.clip(scores, 1e-6, 1 - 1e-6)
-    return float(-np.mean(labels * np.log(clipped) + (1 - labels) * np.log(1 - clipped)))
+def _hub_download(node: ast.Call, rel: str) -> list[str]:
+    name = _call_name(node.func)
+    leaf = name.rsplit(".", 1)[-1]
+    if leaf not in HF_DOWNLOAD_CALLS:
+        return []
+    if offline_weights_allowed():
+        return []
+    return [
+        f"{rel} calls {leaf}, which downloads weights; "
+        "set AMT_HF_OFFLINE_CACHE to a /Volumes path"
+    ]
+
+
+def smoke_frame() -> RankingFrame:
+    """120 rows, 6 variable-size queries, numeric NaNs, and missing categories."""
+
+    sizes = (5, 10, 15, 20, 30, 40)
+    rows: list[dict] = []
+    cursor = 0
+    for query_index, size in enumerate(sizes):
+        for offset in range(size):
+            numeric = float(query_index) + offset / 10.0
+            missing_number = cursor % 7 == 0
+            missing_category = cursor % 5 == 0
+            rows.append(
+                {
+                    "query_id": f"q{query_index}",
+                    "item_id": f"i{cursor:03d}",
+                    "feat__num__signal": float("nan") if missing_number else numeric,
+                    "feat__num__bias": float("nan") if missing_number else 1.0,
+                    "feat__cat__color": None
+                    if missing_category
+                    else ("red", "blue", "green")[cursor % 3],
+                    "ref__production": numeric / 10.0,
+                    "label": cursor % 4,
+                }
+            )
+            cursor += 1
+    frame = RankingFrame(rows)
+    if len(frame) != 120 or len(frame.groups()) != 6:
+        raise RuntimeError("smoke frame is not 120 rows in 6 query groups")
+    if set(frame.group_sizes()) != set(sizes):
+        raise RuntimeError(f"smoke groups are not variable: {frame.group_sizes()}")
+    if not frame.numeric_feature_names() or not frame.categorical_feature_names():
+        raise RuntimeError("smoke frame is missing numeric or categorical features")
+    if "ref__production" not in frame.columns:
+        raise RuntimeError("smoke frame is missing ref__production")
+    return frame
 
 
 def smoke_candidate(candidate_dir: Path) -> dict[str, float]:
-    """Import model.py, fit a separable toy set, and require the loss to fall."""
+    """Import Ranker, fit the contract smoke frame, and require a stable score."""
+
     model_path = candidate_dir / "model.py"
     if not model_path.is_file():
         raise FileNotFoundError(model_path)
@@ -218,17 +242,34 @@ def smoke_candidate(candidate_dir: Path) -> dict[str, float]:
         raise ImportError(f"cannot import {model_path}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    ranker = module.LogisticRanker()
-    rng = np.random.default_rng(0)
-    features = rng.normal(size=(80, 3))
-    labels = (features[:, 0] + 0.5 * features[:, 1] > 0).astype(float)
-    frame = {"X": features, "y": labels}
-    ranker.fit(frame, frame, {"seed": 0})
-    scores = np.asarray(ranker.score(frame), dtype=float)
-    if scores.shape != labels.shape or not np.isfinite(scores).all():
+    if not hasattr(module, "Ranker"):
+        raise ImportError(f"{model_path} does not define Ranker")
+    frame = smoke_frame()
+    hidden = frame.without_labels()
+    deadline = time.monotonic() + 30
+    first = module.Ranker()
+    first.fit(frame, frame, FitContext(seed=0, deadline=deadline))
+    scores = np.asarray(first.score(hidden), dtype=float)
+    _require_scores(scores, len(frame))
+    path = candidate_dir / ".smoke_ranker.pkl"
+    try:
+        first.save(str(path))
+        loaded = module.Ranker.load(str(path))
+        restored = np.asarray(loaded.score(hidden), dtype=float)
+    finally:
+        path.unlink(missing_ok=True)
+    _require_scores(restored, len(frame))
+    if not np.allclose(scores, restored):
+        raise RuntimeError("smoke load did not reproduce scores")
+    second = module.Ranker()
+    second.fit(frame, frame, FitContext(seed=0, deadline=deadline))
+    again = np.asarray(second.score(hidden), dtype=float)
+    _require_scores(again, len(frame))
+    if not np.allclose(scores, again):
+        raise RuntimeError("smoke fit is not deterministic")
+    return {"rows": float(len(frame)), "finite": 1.0, "deterministic": 1.0}
+
+
+def _require_scores(scores: np.ndarray, rows: int) -> None:
+    if scores.shape != (rows,) or not np.isfinite(scores).all():
         raise RuntimeError("smoke scores are missing or non-finite")
-    baseline = _log_loss(labels, np.full_like(labels, 0.5))
-    trained = _log_loss(labels, scores)
-    if trained >= baseline:
-        raise RuntimeError(f"smoke loss did not decrease: {trained:.4f} >= {baseline:.4f}")
-    return {"log_loss": trained, "baseline_log_loss": baseline}

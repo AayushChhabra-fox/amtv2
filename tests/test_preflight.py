@@ -4,12 +4,36 @@ from amt.agents import MODEL_PY
 from amt.preflight import preflight_candidate, static_check
 
 
-def test_logistic_candidate_passes_static_and_smoke(tmp_path: Path) -> None:
-    directory = tmp_path / "candidates" / "c00"
+def test_ranker_passes_static_and_smoke(tmp_path: Path) -> None:
+    directory = tmp_path / "candidates" / "c01"
     directory.mkdir(parents=True)
     (directory / "model.py").write_text(MODEL_PY, encoding="utf-8")
     smoke = preflight_candidate(directory)
-    assert smoke["log_loss"] < smoke["baseline_log_loss"]
+    assert smoke["rows"] == 120
+    assert smoke["finite"] == 1.0
+    assert smoke["deterministic"] == 1.0
+    assert "class Ranker" in MODEL_PY
+    assert "LogisticRanker" not in MODEL_PY
+
+
+def test_static_rejects_hub_downloads_without_a_volume_cache(tmp_path: Path, monkeypatch) -> None:
+    directory = tmp_path / "candidates" / "hub"
+    directory.mkdir(parents=True)
+    (directory / "model.py").write_text(
+        "def load():\n"
+        "    model.from_pretrained('org/name')\n"
+        "    hf_hub_download('org/name', 'weights.bin')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("AMT_HF_OFFLINE_CACHE", raising=False)
+    denied = "\n".join(static_check(directory))
+    assert "from_pretrained" in denied
+    assert "hf_hub_download" in denied
+    monkeypatch.setenv("AMT_HF_OFFLINE_CACHE", "/tmp/hf")
+    still = "\n".join(static_check(directory))
+    assert "from_pretrained" in still
+    monkeypatch.setenv("AMT_HF_OFFLINE_CACHE", "/Volumes/catalog/schema/amt_artifacts/hf")
+    assert static_check(directory) == []
 
 
 def test_static_rejects_spark_holdout_network_and_outside_paths(tmp_path: Path) -> None:

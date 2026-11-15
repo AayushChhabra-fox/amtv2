@@ -46,7 +46,7 @@ class LGBMReferenceRanker:
         groups = train.group_sizes()
         kwargs = {}
         if len(valid.groups()) >= 1 and valid.numeric_matrix()[1]:
-            kwargs["eval_X"] = _align(valid, self.columns)
+            kwargs["eval_X"] = valid.numeric_matrix(self.columns)[0]
             kwargs["eval_y"] = valid.labels().astype(int)
             kwargs["eval_group"] = [valid.group_sizes()]
         try:
@@ -59,7 +59,7 @@ class LGBMReferenceRanker:
     def score(self, frame: RankingFrame) -> np.ndarray:
         if self.model is None:
             raise RuntimeError("lgbm_reference has not been fit")
-        return np.asarray(self.model.predict(_align(frame, self.columns)), dtype=float)
+        return np.asarray(self.model.predict(frame.numeric_matrix(self.columns)[0]), dtype=float)
 
     def save(self, path: str) -> None:
         save_ranker(self, path)
@@ -67,14 +67,3 @@ class LGBMReferenceRanker:
     @classmethod
     def load(cls, path: str) -> LGBMReferenceRanker:
         return load_ranker(path, cls)
-
-
-def _align(frame: RankingFrame, columns: list[str]) -> np.ndarray:
-    matrix = np.zeros((len(frame), len(columns)), dtype=float)
-    for column_index, name in enumerate(columns):
-        for row_index, row in enumerate(frame.rows):
-            raw = row.get(name)
-            if raw is None:
-                continue
-            matrix[row_index, column_index] = float(raw)
-    return matrix

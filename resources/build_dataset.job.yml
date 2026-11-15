@@ -28,7 +28,24 @@ resources:
           libraries:
             - whl: ../dist/*.whl
             - pypi:
+                package: numpy
+            - pypi:
+                package: pandas
+            - pypi:
+                package: pyarrow
+            - pypi:
+                package: scipy
+            - pypi:
+                package: scikit-learn
+            - pypi:
                 package: lightgbm
+            - pypi:
+                package: xgboost
+            - pypi:
+                package: catboost
+            - pypi:
+                package: torch
+                repo: https://download.pytorch.org/whl/cpu
             - pypi:
                 package: mlflow
           spark_python_task:

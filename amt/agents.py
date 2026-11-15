@@ -34,36 +34,51 @@ from amt.context import build_context
 from amt.schemas import Brief, BriefCandidate, Candidate, Verdict
 
 MODEL_PY = '''\
-"""Logistic regression ranker for the Phase 0 toy candidate."""
+"""Contract-shaped ranker. Ridge on numeric feat__ columns; categories are ignored."""
 
 from __future__ import annotations
 
 import pickle
 
 import numpy as np
-from sklearn.linear_model import LogisticRegression
 
 
-class LogisticRanker:
+class Ranker:
     def __init__(self) -> None:
-        self._model = LogisticRegression(max_iter=300, random_state=0)
+        self.columns: list[str] = []
+        self.weights: np.ndarray | None = None
 
-    def fit(self, train: dict, valid: dict, ctx: dict | None = None) -> None:
+    def fit(self, train, valid, ctx) -> None:
         del valid, ctx
-        self._model.fit(np.asarray(train["X"]), np.asarray(train["y"]))
+        matrix, names = train.numeric_matrix()
+        self.columns = list(names)
+        labels = np.asarray(train.labels(), dtype=float)
+        width = matrix.shape[1]
+        if width == 0:
+            self.weights = np.zeros(0, dtype=float)
+            return
+        gram = matrix.T @ matrix + 1e-3 * np.eye(width)
+        self.weights = np.linalg.solve(gram, matrix.T @ labels)
 
-    def score(self, frame: dict) -> np.ndarray:
-        return self._model.predict_proba(np.asarray(frame["X"]))[:, 1]
+    def score(self, frame) -> np.ndarray:
+        if self.weights is None:
+            raise RuntimeError("Ranker has not been fit")
+        matrix, _names = frame.numeric_matrix(self.columns)
+        if matrix.shape[1] == 0:
+            return np.zeros(len(frame), dtype=float)
+        return matrix @ self.weights
 
     def save(self, path: str) -> None:
         with open(path, "wb") as handle:
-            pickle.dump(self._model, handle)
+            pickle.dump({"columns": self.columns, "weights": self.weights}, handle)
 
     @classmethod
-    def load(cls, path: str) -> LogisticRanker:
+    def load(cls, path: str) -> "Ranker":
         ranker = cls()
         with open(path, "rb") as handle:
-            ranker._model = pickle.load(handle)
+            payload = pickle.load(handle)
+        ranker.columns = list(payload["columns"])
+        ranker.weights = payload["weights"]
         return ranker
 '''
 
@@ -499,9 +514,9 @@ def _run_stub(role: str, brief: Brief, root: Path, run_id: str) -> dict:
             claim=spec.claim,
             operator="draft",
             kind="model",
-            fit_argument="Separable toy features are linearly classifiable.",
-            cheap_test="Smoke loss decreases on the toy frame.",
-            kill_if="Smoke scores are non-finite or the loss does not fall.",
+            fit_argument="Numeric feat columns are linearly related to the graded label.",
+            cheap_test="Smoke scores are finite and deterministic on the contract frame.",
+            kill_if="Smoke scores are non-finite or load does not reproduce them.",
             est_cost=spec.est_dbu,
         )
         path = root / "runs" / run_id / "proposals.yaml"
@@ -512,7 +527,7 @@ def _run_stub(role: str, brief: Brief, root: Path, run_id: str) -> dict:
         verdict = Verdict(
             candidate_id=spec.id,
             decision="PASS",
-            reason="Toy skeleton accepts the single logistic proposal.",
+            reason="The single contract-shaped ranker passes the critic.",
         )
         path = root / "runs" / run_id / "verdict.json"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -531,7 +546,7 @@ def _run_stub(role: str, brief: Brief, root: Path, run_id: str) -> dict:
             _write_text(
                 root,
                 f"candidates/{spec.id}/review.md",
-                "# review\n\nThe claimed logistic ranker is present.\n\nVERDICT: PASS\n",
+                "# review\n\nThe claimed Ranker is present.\n\nVERDICT: PASS\n",
             )
         finally:
             _set_active_role(root, None)
@@ -551,6 +566,5 @@ def _write_candidate(root: Path, candidate_id: str, candidate: BriefCandidate) -
     )
     (directory / "spec.md").write_text(
         f"# {candidate_id}\n\n"
-        "Fit a logistic regression on the frame passed to `fit` and return "
-        "finite scores from `score`.\n"
+        "Fit a ridge ranker on numeric feat columns and return finite scores.\n"
     )

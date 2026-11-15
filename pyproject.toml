@@ -6,6 +6,8 @@ requires-python = ">=3.11"
 dependencies = [
   "lightgbm>=4.3",
   "numpy>=1.26",
+  "pandas>=2.2",
+  "pyarrow>=15",
   "pydantic>=2.6",
   "pyyaml>=6.0",
   "scikit-learn>=1.4",
@@ -34,9 +36,7 @@ build-backend = "hatchling.build"
 packages = ["amt", "harness"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"datasets/nfy_article_rerank" = "datasets/nfy_article_rerank"
-"datasets/nfy_article_rerank_demo" = "datasets/nfy_article_rerank_demo"
-"datasets/nfy_clip_rerank" = "datasets/nfy_clip_rerank"
+"datasets" = "datasets"
 
 [tool.ruff]
 line-length = 100

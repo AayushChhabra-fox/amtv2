@@ -1,4 +1,4 @@
-"""Resumable toy loop: proposal, critic, logistic candidate, smoke, hello_train, pruner."""
+"""Resumable search loop: plan, critique, implement, smoke, train, prune."""
 
 from __future__ import annotations
 
@@ -22,9 +22,9 @@ from amt.budget import (
 from amt.config import effective_concurrency, load_settings
 from amt.confirm import ConfirmationSubmission, confirmation_submissions
 from amt.jobs_backend import FakeJobs, make_backend
-from amt.ledger import append, read_rows
+from amt.ledger import read_rows
 from amt.preflight import preflight_candidate
-from amt.pruner import RunView, commit_rung, decide, ledger_row
+from amt.pruner import RunView, commit_rung, decide
 from amt.scale import (
     finish_run_report,
     full_budget_block_reason,
@@ -147,52 +147,12 @@ def run_brief(
             _consume_approval(root, state.run_id)
             _save(state_path, state)
         finished = state.stage
-        if brief.candidate is not None:
-            state = _step(state, brief, root, backend)
-        else:
-            state = _search_step(state, brief, root, backend)
+        state = _search_step(state, brief, root, backend)
         _save(state_path, state)
         if os.environ.get("AMT_STOP_AFTER") == finished:
             return state
         if state.awaiting_approval:
             return state
-    return state
-
-
-def _step(state: RunState, brief: Brief, root: Path, backend: object) -> RunState:
-    stage = state.stage
-    if stage == "PLAN":
-        output = run_role("planner", brief, root, state.run_id)
-        rejected = _reject_invalid_output(state, "planner", output, root)
-        if rejected is not None:
-            return rejected
-        state.stage = "CRITIQUE"
-    elif stage == "CRITIQUE":
-        output = run_role("critic", brief, root, state.run_id)
-        rejected = _reject_invalid_output(state, "critic", output, root)
-        if rejected is not None:
-            return rejected
-        state.stage = "IMPLEMENT"
-    elif stage == "IMPLEMENT":
-        run_role("implementer", brief, root, state.run_id)
-        state.stage = "SMOKE"
-    elif stage == "SMOKE":
-        preflight_candidate(root / "candidates" / state.candidate_id)
-        state.stage = "SUBMIT"
-    elif stage == "SUBMIT":
-        if _submit(state, brief, root, backend):
-            state.stage = "WAIT"
-        else:
-            state.stage = "ESCALATE"
-    elif stage == "WAIT":
-        _wait(state, root, backend)
-        state.stage = "PRUNE"
-    elif stage == "PRUNE":
-        _prune(state, brief, root, backend)
-        state.stage = "REPORT"
-        _write_digest(root, state)
-    else:
-        raise RuntimeError(f"unknown stage {stage}")
     return state
 
 
@@ -258,25 +218,6 @@ def _structured_role_output(role: str, output: Any) -> bool:
     return "verdicts" in output or "decision" in output
 
 
-def _reject_invalid_output(state: RunState, role: str, output: Any, root: Path) -> RunState | None:
-    output = _agent_payload(output)
-    if not _structured_role_output(role, output):
-        return None
-    state, revision = apply_agent_output(state, role, output)
-    if revision is None:
-        return None
-    _write_feedback(root, state, revision)
-    state.stage = "ESCALATE"
-    _write_escalate(root, state, revision.message)
-    return state
-
-
-def _write_feedback(root: Path, state: RunState, revision: AgentRevision) -> None:
-    path = root / "runs" / state.run_id / "agent_feedback.md"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(revision.message)
-
-
 def _others_inflight(root: Path, run_id: str) -> bool:
     runs = root / "runs"
     if not runs.is_dir():
@@ -291,115 +232,6 @@ def _others_inflight(root: Path, run_id: str) -> bool:
         if payload.get("stage") not in {"REPORT", "ESCALATE"}:
             return True
     return False
-
-
-def _submit(state: RunState, brief: Brief, root: Path, backend: object) -> bool:
-    key = f"{state.candidate_id}/{state.rung}/{state.seed}"
-    record = dict(state.submitted_jobs.get(key) or {})
-    if record.get("job_run_id"):
-        state.submitted_jobs[key] = record
-        return True
-    pinned = brief.candidate
-    estimate = float(pinned.est_dbu if pinned else 0.1)
-    committed = node_committed_dbu(read_rows(root), state.run_id, state.candidate_id)
-    try:
-        assert_can_spend(
-            brief,
-            state.spent_dbu + inflight_dbu(state.submitted_jobs),
-            estimate,
-            candidate_spent_dbu=committed + inflight_dbu(state.submitted_jobs, state.candidate_id),
-        )
-    except BudgetExceeded as exc:
-        _write_escalate(root, state, str(exc))
-        return False
-    params = {
-        "candidate_id": state.candidate_id,
-        "rung": state.rung,
-        "seed": str(state.seed),
-        "batch": state.batch,
-        "family": state.family,
-        "git_sha": state.git_sha,
-        "dbu_est": str(estimate),
-        "amt_run_id": state.run_id,
-        "experiment_name": "/Shared/amt/nfy_article_rerank",
-    }
-    token = f"{state.run_id}:{key}"
-    job_run_id = backend.submit(  # type: ignore[attr-defined]
-        job="hello_train",
-        job_key=key,
-        params=params,
-        idempotency_token=token,
-    )
-    record.update({"job_run_id": job_run_id, "submitted_at": time.time(), "dbu_est": estimate})
-    state.submitted_jobs[key] = record
-    return True
-
-
-def _wait(state: RunState, root: Path, backend: object) -> None:
-    del root
-    key = f"{state.candidate_id}/{state.rung}/{state.seed}"
-    record = state.submitted_jobs[key]
-    result = backend.wait(record["job_run_id"])  # type: ignore[attr-defined]
-    record["result_state"] = result.get("result_state")
-    record["finished_at"] = time.time()
-    if result.get("result_state") != "SUCCESS":
-        raise RuntimeError(f"hello_train ended {result}")
-    state.submitted_jobs[key] = record
-
-
-def _prune(state: RunState, brief: Brief, root: Path, backend: object) -> None:
-    key = f"{state.candidate_id}/{state.rung}/{state.seed}"
-    record = state.submitted_jobs[key]
-    found = backend.find_mlflow_run(  # type: ignore[attr-defined]
-        tags={
-            "candidate_id": state.candidate_id,
-            "rung": state.rung,
-            "seed": str(state.seed),
-        }
-    )
-    metric = None if found is None else found.get("metric")
-    mlflow_run_id = None if found is None else found.get("mlflow_run_id")
-    wall_min = None
-    if record.get("submitted_at") and record.get("finished_at"):
-        wall_min = round((record["finished_at"] - record["submitted_at"]) / 60, 3)
-    if wall_min is None:
-        charged = float(record.get("dbu_est") or 0.0)
-    else:
-        charged = estimate_dbu(wall_min)
-    if not record.get("pruned"):
-        if not _ledger_has(root, state):
-            claim = brief.candidate.claim if brief.candidate else "logistic regression"
-            append(
-                root,
-                ledger_row(
-                    run_id=state.run_id,
-                    node_id=state.candidate_id,
-                    family=state.family,
-                    claim=claim,
-                    rung=state.rung,
-                    seed=state.seed,
-                    metric=float(metric) if metric is not None else None,
-                    dbu=charged,
-                    wall_min=wall_min,
-                    git_sha=state.git_sha,
-                    mlflow_run_id=mlflow_run_id,
-                    job_run_id=record.get("job_run_id"),
-                ),
-            )
-            state.spent_dbu += charged
-        record["pruned"] = True
-    record["mlflow_run_id"] = mlflow_run_id or record.get("mlflow_run_id")
-    state.submitted_jobs[key] = record
-
-
-def _ledger_has(root: Path, state: RunState) -> bool:
-    return any(
-        row.run_id == state.run_id
-        and row.node_id == state.candidate_id
-        and row.rung == state.rung
-        and row.seed == state.seed
-        for row in read_rows(root)
-    )
 
 
 def _new_state(brief: Brief, run_id: str, brief_path: Path, root: Path) -> RunState:
@@ -427,7 +259,7 @@ def _new_state(brief: Brief, run_id: str, brief_path: Path, root: Path) -> RunSt
         run_id=run_id,
         brief_path=str(brief_path),
         stage="PLAN",
-        round=0,
+        round=1,
         live_nodes=[] if pinned is None else [pinned.id],
         approval_mode=brief.approval_mode,
         scale=brief.scale,
@@ -518,18 +350,6 @@ def _enter_phase2(state: RunState, root: Path) -> RunState:
     path.write_text(render_phase2_entry(state.run_id, receipt), encoding="utf-8")
     state.stage = "REPORT"
     return state
-
-
-def _write_digest(root: Path, state: RunState) -> None:
-    path = root / "runs" / state.run_id / "round_0.md"
-    key = f"{state.candidate_id}/{state.rung}/{state.seed}"
-    record = state.submitted_jobs.get(key, {})
-    path.write_text(
-        "# Round 0\n\n"
-        f"Candidate `{state.candidate_id}` family `{state.family}` "
-        f"job `{record.get('job_run_id')}` mlflow `{record.get('mlflow_run_id')}`.\n\n"
-        f"Spent {state.spent_dbu} DBU (estimated).\n"
-    )
 
 
 def operator_for_round(round_number: int, *, plateau: bool, lineage_count: int) -> str:

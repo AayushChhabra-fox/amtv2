@@ -2,6 +2,10 @@
 
 ``score`` receives a frame whose labels have been removed. ``FitContext``
 accepts training logs only; evaluation metric names are rejected.
+
+``RankingFrame`` stores one split as a pandas frame sorted by ``query_id``,
+``item_id``. ``rows`` is a lazy list of dicts for callers that still walk
+records. Numeric work goes through ``numeric_matrix``.
 """
 
 from __future__ import annotations
@@ -10,6 +14,7 @@ import time
 from typing import Any, Protocol
 
 import numpy as np
+import pandas as pd
 
 from harness.data.contract import AUX_PREFIX, FEAT_PREFIX
 
@@ -68,102 +73,186 @@ class RankingFrame:
     """Columnar view of one contract-shaped split. Rows are grouped by query."""
 
     def __init__(self, rows: list[dict[str, Any]]) -> None:
-        self.rows = sorted(rows, key=lambda row: (str(row["query_id"]), str(row["item_id"])))
-        self.columns = set().union(*(row.keys() for row in self.rows)) if self.rows else set()
+        self._frame = _sort_frame(pd.DataFrame(rows))
+        self._rows: list[dict[str, Any]] | None = None
 
     def __len__(self) -> int:
-        return len(self.rows)
+        return int(len(self._frame))
+
+    @property
+    def columns(self) -> set[str]:
+        return set(self._frame.columns)
 
     def column_names(self) -> set[str]:
         return set(self.columns)
 
     @property
+    def rows(self) -> list[dict[str, Any]]:
+        """Records in frame order. Built on first access and then reused."""
+
+        if self._rows is None:
+            self._rows = [_record(row) for row in self._frame.to_dict(orient="records")]
+        return self._rows
+
+    @property
     def item_id(self) -> list[Any]:
-        return [row.get("item_id") for row in self.rows]
+        if "item_id" not in self._frame.columns:
+            return [None] * len(self)
+        return [_python(value) for value in self._frame["item_id"].tolist()]
+
+    def to_pandas(self) -> pd.DataFrame:
+        """Copy of the sorted frame. Mutations do not change this object."""
+
+        return self._frame.copy()
 
     def labels(self) -> np.ndarray:
-        if "label" not in self.columns:
+        if "label" not in self._frame.columns:
             raise KeyError("label")
-        return np.asarray([row["label"] for row in self.rows], dtype=float)
+        values = pd.to_numeric(self._frame["label"], errors="coerce")
+        return values.to_numpy(dtype=float, na_value=np.nan)
 
-    def numeric_matrix(self) -> tuple[np.ndarray, list[str]]:
-        names = self.numeric_feature_names()
-        matrix = np.zeros((len(self), len(names)), dtype=float)
-        for column_index, name in enumerate(names):
-            for row_index, row in enumerate(self.rows):
-                raw = row.get(name)
-                if raw is None:
-                    continue
-                matrix[row_index, column_index] = float(raw)
-        return matrix, names
+    def numeric_matrix(self, columns: list[str] | None = None) -> tuple[np.ndarray, list[str]]:
+        """Numeric columns as a float array. Missing values, including NaN, are 0.
+
+        ``columns`` selects and orders the columns. A name that is absent is an
+        all-zero column, so a model can score a frame that dropped a feature.
+        """
+
+        names = list(columns) if columns is not None else self.numeric_feature_names()
+        width = len(names)
+        if width == 0:
+            return np.zeros((len(self), 0), dtype=float), []
+        aligned = pd.DataFrame(
+            {name: _numeric_series(self._frame, name) for name in names},
+            index=self._frame.index,
+        )
+        return aligned.to_numpy(dtype=float, na_value=0.0), names
 
     def column(self, name: str) -> list[Any]:
-        if name not in self.columns and name not in {"query_id", "item_id", "label"}:
+        if name not in self._frame.columns:
             raise KeyError(name)
-        if name not in self.columns:
-            raise KeyError(name)
-        return [row.get(name) for row in self.rows]
+        return [_python(value) for value in self._frame[name].tolist()]
 
     def __getitem__(self, name: str) -> list[Any]:
         return self.column(name)
 
     def without_labels(self) -> RankingFrame:
-        hidden: list[dict[str, Any]] = []
-        for row in self.rows:
-            copied = {
-                key: value
-                for key, value in row.items()
-                if key != "label" and not key.startswith(AUX_PREFIX)
-            }
-            hidden.append(copied)
-        return RankingFrame(hidden)
+        drop = [
+            name
+            for name in self._frame.columns
+            if name == "label" or str(name).startswith(AUX_PREFIX)
+        ]
+        return RankingFrame.from_pandas(self._frame.drop(columns=drop))
 
     def groups(self) -> list[tuple[int, int, Any]]:
-        if not self.rows:
+        if self._frame.empty or "query_id" not in self._frame.columns:
             return []
-        spans: list[tuple[int, int, Any]] = []
-        start = 0
-        current = self.rows[0]["query_id"]
-        for index, row in enumerate(self.rows):
-            if row["query_id"] != current:
-                spans.append((start, index, current))
-                start = index
-                current = row["query_id"]
-        spans.append((start, len(self.rows), current))
-        return spans
+        ids = self._frame["query_id"].to_numpy()
+        if len(ids) == 0:
+            return []
+        change = np.flatnonzero(ids[1:] != ids[:-1]) + 1
+        starts = np.concatenate((np.array([0]), change))
+        ends = np.concatenate((change, np.array([len(ids)])))
+        spans = zip(starts, ends, strict=True)
+        return [(_as_int(start), _as_int(end), _python(ids[start])) for start, end in spans]
 
     def group_sizes(self) -> list[int]:
         return [end - start for start, end, _query_id in self.groups()]
 
     def numeric_feature_names(self) -> list[str]:
         names = []
-        for name in sorted(self.columns):
-            if not name.startswith(FEAT_PREFIX):
+        for name in sorted(self._frame.columns, key=str):
+            if not str(name).startswith(FEAT_PREFIX):
                 continue
-            if _numeric_column(self.rows, name):
-                names.append(name)
+            if _numeric_column(self._frame[name]):
+                names.append(str(name))
+        return names
+
+    def categorical_feature_names(self) -> list[str]:
+        """``feat__`` columns that carry strings rather than numbers."""
+
+        numeric = set(self.numeric_feature_names())
+        names = []
+        for name in sorted(self._frame.columns, key=str):
+            text = str(name)
+            if not text.startswith(FEAT_PREFIX) or text in numeric:
+                continue
+            if _has_value(self._frame[name]):
+                names.append(text)
         return names
 
     @classmethod
     def from_rows(cls, rows: list[dict[str, Any]]) -> RankingFrame:
         return cls(rows)
 
+    @classmethod
+    def from_pandas(cls, frame: pd.DataFrame) -> RankingFrame:
+        """Wrap a frame that is already the split, and sort it."""
 
-def _numeric_column(rows: list[dict[str, Any]], name: str) -> bool:
-    seen = False
-    for row in rows:
-        value = row.get(name)
-        if value is None:
-            continue
-        seen = True
-        if isinstance(value, bool):
-            continue
-        if isinstance(value, (int, float)):
-            if isinstance(value, float) and np.isnan(value):
-                continue
-            continue
-        try:
-            float(value)
-        except (TypeError, ValueError):
-            return False
-    return seen
+        obj = cls.__new__(cls)
+        obj._frame = _sort_frame(frame.reset_index(drop=True))
+        obj._rows = None
+        return obj
+
+
+def _sort_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty or "query_id" not in frame.columns or "item_id" not in frame.columns:
+        return frame.reset_index(drop=True)
+    ordered = frame.sort_values(
+        by=["query_id", "item_id"],
+        key=lambda column: column.map(_sort_token),
+        kind="mergesort",
+    )
+    return ordered.reset_index(drop=True)
+
+
+def _sort_token(value: Any) -> str:
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return ""
+    return str(value)
+
+
+def _numeric_series(frame: pd.DataFrame, name: str) -> pd.Series:
+    if name not in frame.columns:
+        return pd.Series(np.zeros(len(frame)), index=frame.index, dtype=float)
+    return pd.to_numeric(frame[name], errors="coerce")
+
+
+def _numeric_column(series: pd.Series) -> bool:
+    """True when every present value is a number. An all-null column is not."""
+
+    if series.empty:
+        return False
+    if pd.api.types.is_bool_dtype(series) or pd.api.types.is_numeric_dtype(series):
+        return bool(series.notna().any())
+    present = series.notna()
+    if not bool(present.any()):
+        return False
+    coerced = pd.to_numeric(series, errors="coerce")
+    failed = present & coerced.isna()
+    return not bool(failed.any())
+
+
+def _has_value(series: pd.Series) -> bool:
+    return bool(series.notna().any())
+
+
+def _python(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, float) and np.isnan(value):
+        return None
+    if isinstance(value, np.generic):
+        item = value.item()
+        if isinstance(item, float) and np.isnan(item):
+            return None
+        return item
+    return value
+
+
+def _record(row: dict[str, Any]) -> dict[str, Any]:
+    return {key: _python(value) for key, value in row.items()}
+
+
+def _as_int(value: Any) -> int:
+    return int(value)

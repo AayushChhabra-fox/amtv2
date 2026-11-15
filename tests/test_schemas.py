@@ -54,6 +54,8 @@ def test_toy_brief_yaml_round_trip() -> None:
     brief = load_brief(ROOT / "briefs" / "toy.yaml")
     assert brief.name == "toy"
     assert brief.approval_mode == "none"
+    assert brief.k == 1
+    assert brief.candidate is not None and brief.candidate.id == "c01"
     assert brief.resolved_dataset_spec() == "datasets/toy"
     assert brief.task.forbidden == ["holdout labels"]
     assert brief.budget.total_dbu == 10
@@ -271,10 +273,10 @@ def test_run_returns_malformed_output_as_one_revision(tmp_path: Path, monkeypatc
     monkeypatch.setenv("AMT_JOBS_BACKEND", "fake")
     monkeypatch.setenv("AMT_GIT_SHA", "abc123")
 
-    def bad_planner(role: str, brief: Brief, root: Path, run_id: str) -> dict:
-        del brief, root, run_id
+    def bad_planner(role: str, brief: Brief, root: Path, run_id: str, **kwargs) -> dict:
+        del brief, root, run_id, kwargs
         assert role == "planner"
-        return {"candidates": [{"id": "c00", "operator": "draft"}]}
+        return {"candidates": [{"id": "c01", "operator": "draft"}]}
 
     monkeypatch.setattr("amt.orchestrator.run_role", bad_planner)
     path = tmp_path / "briefs" / "toy.yaml"
@@ -293,7 +295,7 @@ def test_run_returns_malformed_output_as_one_revision(tmp_path: Path, monkeypatc
     )
     state = run_brief(path, root=tmp_path)
     assert state.stage == "ESCALATE"
-    assert state.revisions == 1
+    assert state.revisions == 2
     feedback = (tmp_path / "runs" / "toy" / "agent_feedback.md").read_text(encoding="utf-8")
     escalate = (tmp_path / "runs" / "toy" / "ESCALATE.md").read_text(encoding="utf-8")
     assert "counts as 1 revision" in feedback
@@ -389,7 +391,7 @@ def test_mlflow_tag_convention() -> None:
         )
 
 
-def test_hello_train_sets_the_tag_convention() -> None:
-    source = (ROOT / "src" / "hello_train.py").read_text(encoding="utf-8")
-    for key in MLFLOW_TAG_KEYS:
-        assert f'"{key}"' in source
+def test_train_sets_the_tag_convention() -> None:
+    source = (ROOT / "harness" / "train.py").read_text(encoding="utf-8")
+    assert "mlflow_tags(" in source
+    assert "hello_train" not in source

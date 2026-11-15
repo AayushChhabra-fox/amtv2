@@ -132,7 +132,6 @@ INTERNAL_ENV = frozenset(
         "AMT_ENV_ROOT",
         "AMT_ROLE",
         "AMT_JOBS_BACKEND",
-        "AMT_HELLO_TRAIN_JOB_ID",
         "AMT_TRAIN_JOB_ID",
         "AMT_CONFIRM_JOB_ID",
         "AMT_FINAL_HOLDOUT_JOB_ID",

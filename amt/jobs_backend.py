@@ -3,7 +3,7 @@
 Submission is idempotent on the caller's token. ``runs/run-now`` and
 ``runs/submit`` both honour ``idempotency_token`` for about 48 hours.
 ``job`` selects the bundle job (``train``, ``confirm``, ``final_holdout``,
-``build_dataset``, ``hello_train``). The state key stays ``job_key``.
+``build_dataset``). The state key stays ``job_key``.
 """
 
 from __future__ import annotations
@@ -19,8 +19,7 @@ import yaml
 
 from amt.config import load_settings
 
-EXPERIMENT_NAME = "/Shared/amt/nfy_article_rerank"
-JOB_NAMES = ("hello_train", "train", "confirm", "final_holdout", "build_dataset")
+JOB_NAMES = ("train", "confirm", "final_holdout", "build_dataset")
 REPO = Path(__file__).resolve().parents[1]
 
 
@@ -105,7 +104,7 @@ class FakeJobs:
     def submit(
         self,
         *,
-        job: str = "hello_train",
+        job: str = "train",
         job_key: str,
         params: dict,
         idempotency_token: str,
@@ -172,7 +171,7 @@ class DatabricksJobs:
     def submit(
         self,
         *,
-        job: str = "hello_train",
+        job: str = "train",
         job_key: str,
         params: dict,
         idempotency_token: str,
@@ -597,12 +596,6 @@ def resolve_job_ids(root: Path) -> dict[str, str]:
     return found
 
 
-def resolve_job_id(root: Path) -> str:
-    """Walking-skeleton helper. Prefer ``resolve_job_ids``."""
-
-    return resolve_job_ids(root)["hello_train"]
-
-
 def _bundle_summary(root: Path) -> dict:
     target = load_settings(root).bundle_target
     return _run_json(
@@ -632,7 +625,7 @@ def _dig_named_job(summary: dict, name: str) -> str | None:
     return None
 
 
-def experiment_id_by_name(root: Path, name: str = EXPERIMENT_NAME) -> str:
+def experiment_id_by_name(root: Path, name: str) -> str:
     response = _run_json(
         [databricks_bin(), "experiments", "get-by-name", name, "-o", "json"],
         cwd=root,

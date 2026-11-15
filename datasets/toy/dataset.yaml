@@ -1,3 +1,8 @@
+# Local contract fixture for the unified train path. The pinned brief candidate
+# is c01, so c00 stays free for the LightGBM reference. Smoke and the default
+# model fit a Ranker on a 120-row frame: six variable-size query groups,
+# feat__num__* (with NaN), feat__cat__* (with nulls), ref__production, and
+# graded labels 0..3. This folder is not a warehouse spec.
 name: toy
 task_type: ranking
-note: Local walking-skeleton spec. The toy loop does not read warehouse tables.
+note: Contract-shaped Ranker fixture. The toy loop does not read warehouse tables.
