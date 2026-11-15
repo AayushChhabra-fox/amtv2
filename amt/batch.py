@@ -12,13 +12,13 @@ from pathlib import Path
 from amt import volume
 from amt.config import load_settings
 from amt.deploy import _git_sha, freshness_token
+from amt.gates import write_ladder_report, write_noise_report
 from amt.job_params import build_job_params
 from amt.jobs_backend import FakeJobs, make_backend
 from amt.ladder import build_ladder_report, ladder_jobs
 from amt.noise import build_noise_report, round0_jobs
 from amt.schemas import Brief
 from amt.scores import scores_path
-from amt.signoff import write_ladder_report, write_noise_report
 from amt.volume import VolumeError
 from harness.ladder import LADDER_DESIGNS
 
@@ -80,6 +80,7 @@ def collect_ladder(
     *,
     skip_r1: list[str],
     r1_train_fraction: float | None,
+    report_name: str | None = None,
 ) -> tuple[str, Path]:
     run_name = f"ladder-{dataset}"
     current = {design.design_id for design in LADDER_DESIGNS}
@@ -96,7 +97,7 @@ def collect_ladder(
         r1_train_fraction=r1_train_fraction,
         unsupported=_unsupported_families(_newest(rows, scored=False)),
     )
-    written = write_ladder_report(root, report)
+    written = write_ladder_report(root, report, name=report_name)
     return report.status, written
 
 

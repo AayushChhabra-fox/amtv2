@@ -9,18 +9,33 @@ import yaml
 
 from amt.agents import run_role
 from amt.cli import main
+from amt.gates import publish_ready_packet, sign_ready
 from amt.jobs_backend import FakeJobs
 from amt.ladder import build_ladder_report
 from amt.noise import build_noise_report
 from amt.orchestrator import fork_on_plateau, operator_for_round, run_brief
 from amt.schemas import Brief, load_brief
-from amt.signoff import sign_g1, sign_g2, write_ladder_report, write_noise_report
 from amt.status import audit_rows
 from tests.test_ladder import _cells as ladder_cells
 from tests.test_noise import _brief, _cells
 
 ROOT = Path(__file__).resolve().parents[1]
 SIGNED = datetime(2026, 11, 12, 15, 0, tzinfo=timezone.utc)
+def _modality_manifest() -> dict:
+    return {
+        "dataset": "nfy_article_rerank",
+        "modality": {
+            "numeric_count": 4,
+            "categorical_columns": ["feat__cat__section"],
+            "embedding_groups": [],
+            "text_columns": [],
+            "prod_signal_columns": ["feat__prod_signals__total_score"],
+            "row_count": 10,
+            "query_count": 2,
+        },
+    }
+
+
 METRICS = {
     "*": {
         "ndcg@10_graded": 0.45,
@@ -56,13 +71,12 @@ def _sign(
         reference_scores=["production", "recency"],
     )
     assert report.status == "pass"
-    write_noise_report(tmp_path, brief, path, report)
-    manifest = tmp_path / "manifest.json"
-    manifest.write_text('{"rows": 1}\n', encoding="utf-8")
-    sign_g1(tmp_path, path, "Ada Lovelace", manifest, signed_at=SIGNED)
     ladder = build_ladder_report(ladder_cells(), dataset="nfy_article_rerank")
-    write_ladder_report(tmp_path, ladder)
-    sign_g2(tmp_path, "nfy_article_rerank", "Grace Hopper", signed_at=SIGNED)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps(_modality_manifest()) + "\n", encoding="utf-8")
+    packet, _written = publish_ready_packet(tmp_path, brief, path, report, ladder, manifest)
+    assert packet.status == "pass", packet.remediation
+    sign_ready(tmp_path, path, "Ada Lovelace", signed_at=SIGNED)
     metrics = tmp_path / ".amt" / "fake_metrics.json"
     metrics.parent.mkdir(parents=True, exist_ok=True)
     metrics.write_text(json.dumps(METRICS), encoding="utf-8")

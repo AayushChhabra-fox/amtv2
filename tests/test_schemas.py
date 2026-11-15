@@ -134,6 +134,24 @@ def test_conflicting_dataset_spec_is_rejected() -> None:
         )
 
 
+def test_brief_constraints_and_auto_min_effect() -> None:
+    brief = Brief.model_validate({"name": "nfy", "budget": {"total_dbu": 1}})
+    assert brief.min_effect == "auto"
+    assert brief.effect_floor() == pytest.approx(0.01)
+    assert brief.constraints.allow_gpu_serving is False
+    assert brief.constraints.allow_external_weights is False
+    assert brief.constraints.license_policy == "commercial_only"
+    assert brief.design_space is None
+    hinted = brief.model_validate(
+        brief.model_dump(mode="json") | {"design_space": {"families": ["lgbm"]}, "min_effect": 0.02}
+    )
+    assert hinted.design_space is not None
+    assert hinted.design_space.families == ["lgbm"]
+    assert hinted.effect_floor() == pytest.approx(0.02)
+    again = Brief.model_validate(hinted.model_dump(mode="json"))
+    assert again == hinted
+
+
 def test_unknown_brief_field_is_rejected() -> None:
     with pytest.raises(ValidationError):
         Brief.model_validate({"name": "toy", "budget": {"total_dbu": 1}, "extra_field": "kept"})

@@ -21,6 +21,13 @@ from amt.budget import (
 )
 from amt.config import effective_concurrency, load_settings
 from amt.confirm import ConfirmationSubmission, confirmation_submissions
+from amt.gates import (
+    SignoffError,
+    _spec_path,
+    apply_locked_min_effect,
+    brief_key,
+    search_block_reason,
+)
 from amt.job_params import (
     baselines_required,
     lgbm_baseline_view,
@@ -34,9 +41,6 @@ from amt.preflight import preflight_candidate
 from amt.pruner import RunView, commit_rung, decide
 from amt.scale import (
     finish_run_report,
-    full_budget_block_reason,
-    passing_small_receipt,
-    render_phase2_entry,
     scale_block_reason,
     stats_summary,
     write_agent_stats,
@@ -54,7 +58,6 @@ from amt.schemas import (
     load_brief,
     parse_agent_output,
 )
-from amt.signoff import SignoffError, _spec_path, brief_key, search_block_reason
 from amt.snapshot import SnapshotError, upload_candidate
 from harness.data.contract import load_spec
 
@@ -118,15 +121,12 @@ def run_brief(
     )
     if scaled:
         return _stop(state_path, state, root, scaled)
+    apply_locked_min_effect(root, brief, brief_path)
     if state.scale == "calibration":
         try:
             write_calibration_claim(root, state.run_id, brief_key(brief, brief_path))
         except SignoffError as exc:
             return _stop(state_path, state, root, str(exc))
-    if state.scale == "full":
-        state = _enter_phase2(state, root)
-        _save(state_path, state)
-        return state
     from amt.doctor import cheap
 
     problems = cheap()
@@ -333,24 +333,6 @@ def _apply_scale(brief: Brief, state: RunState) -> None:
     elif state.scale == "small":
         brief.k = state.k
         brief.approval_mode = state.approval_mode
-
-
-def _enter_phase2(state: RunState, root: Path) -> RunState:
-    reason = full_budget_block_reason(root)
-    if reason:
-        state.stage = "ESCALATE"
-        _write_escalate(root, state, reason)
-        return state
-    receipt = passing_small_receipt(root)
-    if receipt is None:
-        state.stage = "ESCALATE"
-        _write_escalate(root, state, "Full budget is not ready. No passing K=4 run is recorded.")
-        return state
-    path = root / "runs" / state.run_id / "phase2_entry.md"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(render_phase2_entry(state.run_id, receipt), encoding="utf-8")
-    state.stage = "REPORT"
-    return state
 
 
 def operator_for_round(round_number: int, *, plateau: bool, lineage_count: int) -> str:
@@ -929,7 +911,7 @@ def _advance_round(state: RunState, brief: Brief, root: Path, survived: bool) ->
     kept = [node.node_id for node in state.nodes if node.status == "kept"]
     nxt = operator_for_round(
         state.round + 1,
-        plateau=fork_on_plateau(list(state.improvement_gains), brief.min_effect),
+        plateau=fork_on_plateau(list(state.improvement_gains), brief.effect_floor()),
         lineage_count=len(set(kept)),
     )
     if brief.max_rounds is not None and state.round >= brief.max_rounds:

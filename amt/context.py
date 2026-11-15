@@ -64,7 +64,7 @@ def build_context(
     if parent_ids:
         lines.append("Parent nodes: " + ", ".join(parent_ids))
     if brief.design_space and brief.design_space.families:
-        lines.append("Allowed families: " + "; ".join(brief.design_space.families))
+        lines.append("Family hints (optional): " + "; ".join(brief.design_space.families))
     if note:
         lines.extend(["", "Note:", note.strip()])
     if operator == "draft":

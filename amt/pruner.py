@@ -672,7 +672,7 @@ def _missing_delta(summary: _Summary) -> NodeDecision | None:
 
 
 def _floor_kill(summary: _Summary, brief: Brief, rung: str) -> NodeDecision | None:
-    threshold = _floor_threshold(rung, brief.min_effect)
+    threshold = _floor_threshold(rung, brief.effect_floor())
     if threshold is None or summary.delta is None:
         return None
     checks = [("lgbm_reference", summary.delta), *summary.ref_deltas.items()]

@@ -13,6 +13,7 @@ from amt.orchestrator import _plan_note, _proposal_problems, run_brief
 from amt.scale import (
     collect_agent_stats,
     evaluate_small_run,
+    full_budget_block_reason,
     g3_is_current,
     scale_block_reason,
     sign_g3,
@@ -124,9 +125,10 @@ def test_calibration_is_one_lineage_and_is_not_repeated(
     assert "every_stage" in (tmp_path / "runs" / "bad" / "ESCALATE.md").read_text(encoding="utf-8")
     assert not (tmp_path / "gates" / "g3" / "started.json").is_file()
 
-    early = run_brief(brief, root=tmp_path, run_id="early", scale="small")
-    assert early.stage == "ESCALATE"
-    assert "G3" in (tmp_path / "runs" / "early" / "ESCALATE.md").read_text(encoding="utf-8")
+    assert (
+        scale_block_reason(tmp_path, scale="small", run_id="early", k=4, approval_mode="none")
+        is None
+    )
     assert FakeJobs(tmp_path).submit_count() == 0
 
     _script(
@@ -344,46 +346,30 @@ def test_k4_unattended_run_records_stats_and_opens_phase2(
     assert all(row.kill_reason for row in killed)
     assert len({row.family for row in small_rows}) >= 3
 
-    opened = run_brief(brief, root=tmp_path, run_id="full-entry", scale="full")
-    assert opened.stage == "REPORT"
-    entry = (tmp_path / "runs" / "full-entry" / "phase2_entry.md").read_text(encoding="utf-8")
-    assert "does not start training" in entry
-    assert "bug rate" in entry
     assert FakeJobs(tmp_path).submit_count() == before + 27
+    assert full_budget_block_reason(tmp_path) is None
+    assert (
+        scale_block_reason(tmp_path, scale="full", run_id="full-entry", k=4, approval_mode="none")
+        is None
+    )
     assert main(["gates", "--root", str(tmp_path), "--brief", str(brief)]) == 0
-    assert "full budget ready" in capsys.readouterr().out
+    assert "ready current" in capsys.readouterr().out
     assert main(["stats", "--root", str(tmp_path), "--run-id", "small"]) == 0
 
 
-def test_full_budget_waits_for_the_small_run(
+def test_full_budget_is_not_gated_on_calibration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     brief = _prepare(tmp_path, monkeypatch)
-    _script(
-        tmp_path,
-        "cal",
-        [
-            {
-                "role": "planner",
-                "output": {"candidates": [_candidate("c00", "draft", claim="calibration draft")]},
-                "usage": {"total_tokens": 11},
-            },
-            {"role": "critic", "output": {"verdicts": [_pass("c00")]}},
-            {"role": "implementer", "node_id": "c00"},
-            {"role": "reviewer", "node_id": "c00"},
-        ],
+    assert full_budget_block_reason(tmp_path) is None
+    assert (
+        scale_block_reason(tmp_path, scale="small", run_id="s", k=4, approval_mode="none") is None
     )
-    assert _drive(brief, tmp_path, "cal", scale="calibration").stage == "REPORT"
-    sign_g3(tmp_path, brief, "Ada Lovelace", "cal", signed_at=SIGNED)
-    before = FakeJobs(tmp_path).submit_count()
-    state = run_brief(brief, root=tmp_path, run_id="full", scale="full")
-    assert state.stage == "ESCALATE"
-    assert "small-budget" in (tmp_path / "runs" / "full" / "ESCALATE.md").read_text(
-        encoding="utf-8"
+    assert (
+        scale_block_reason(tmp_path, scale="full", run_id="full", k=4, approval_mode="none") is None
     )
-    assert FakeJobs(tmp_path).submit_count() == before
     assert main(["gates", "--root", str(tmp_path), "--brief", str(brief)]) == 0
-    assert "full budget not ready" in capsys.readouterr().out
+    assert "ready current" in capsys.readouterr().out
 
 
 def test_agent_stats_count_bugs_revisions_tokens_and_wall_clock(tmp_path: Path) -> None:
@@ -529,5 +515,6 @@ def test_k4_plan_asks_for_eight_drafts_and_three_improvements() -> None:
     improve_note = _plan_note(state, "")
     assert "3 atomic improvements" in improve_note
     assert scale_block_reason(Path("."), scale="small", run_id="s", k=1, approval_mode="none")
-    blocked = scale_block_reason(Path("."), scale="small", run_id="s", k=4, approval_mode="none")
-    assert blocked is not None and "G3" in blocked
+    assert (
+        scale_block_reason(Path("."), scale="small", run_id="s", k=4, approval_mode="none") is None
+    )

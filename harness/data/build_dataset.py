@@ -18,6 +18,8 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from amt.modality import summarize_fields, summarize_rows
+
 
 def _bundle_root() -> Path:
     """Directory that contains ``harness/``. Databricks may copy the entry script."""
@@ -137,6 +139,22 @@ class SparkExecutor:
 
     def columns(self, view: str) -> list[str]:
         return list(self.spark.table(view).columns)
+
+    def fields(self, table: str) -> list[tuple[str, str]]:
+        frame = self.spark.table(table)
+        schema = getattr(frame, "schema", None)
+        found: list[tuple[str, str]] = []
+        for field in getattr(schema, "fields", []) or []:
+            name = getattr(field, "name", "")
+            data_type = getattr(field, "dataType", None)
+            simple = getattr(data_type, "simpleString", None)
+            type_name = simple() if callable(simple) else str(data_type or "double")
+            if name:
+                found.append((str(name), type_name))
+        if found:
+            return found
+        columns = getattr(frame, "columns", None) or self.columns(table)
+        return [(str(name), "double") for name in columns]
 
     def replace_view(self, view: str, select_sql: str) -> None:
         self.spark.sql(f"CREATE OR REPLACE TEMP VIEW {view} AS {select_sql}")
@@ -266,6 +284,7 @@ def _manifest(
         "splits": splits,
         "samples": samples,
         "checks": checks,
+        "modality": summarize_rows(rows_by_split),
     }
 
 
@@ -395,6 +414,19 @@ def _spark_hash(executor: SparkExecutor, table: str) -> str:
         f"AS DECIMAL(38,0))) AS STRING), 256) AS content_hash FROM {table}"
     )
     return str(rows[0]["content_hash"])
+
+
+def _spark_modality(
+    executor: SparkExecutor, written: dict[str, str], split_meta: dict[str, dict]
+) -> dict:
+    row_count = sum(int(meta.get("rows") or 0) for meta in split_meta.values())
+    query_count = sum(int(meta.get("queries") or 0) for meta in split_meta.values())
+    table = written.get("search_val") or next(iter(written.values()), "")
+    if not table:
+        return summarize_fields([], row_count=row_count, query_count=query_count)
+    return summarize_fields(
+        executor.fields(table), row_count=row_count, query_count=query_count
+    )
 
 
 def _spark_summary_inputs(executor: SparkExecutor, table: str) -> dict[str, Any]:
@@ -710,6 +742,7 @@ def _build_spark_impl(
         "samples": samples,
         "checks": checks,
         "tables": written,
+        "modality": _spark_modality(executor, written, split_meta),
     }
     output_dir.mkdir(parents=True, exist_ok=True)
     text = json.dumps(manifest, indent=2, sort_keys=True, default=str)

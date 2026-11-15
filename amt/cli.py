@@ -21,30 +21,28 @@ from amt.deploy import DeployError, deploy
 from amt.doctor import report as doctor_report
 from amt.envutil import load_env
 from amt.final import FinalError, open_final, reproduce
+from amt.gates import (
+    SignoffError,
+    ready_is_current,
+    search_block_reason,
+    sign_ready,
+    write_ladder_report,
+    write_noise_report,
+)
+from amt.gates import _resolve as resolve_under
+from amt.gates import _spec_path as spec_path
 from amt.ladder import build_ladder_report, ladder_jobs
 from amt.ladder import load_cells as load_ladder_cells
 from amt.noise import GateDataError, build_noise_report, round0_jobs
 from amt.noise import load_cells as load_noise_cells
 from amt.orchestrator import run_brief
+from amt.prep import PrepError, run_prep
 from amt.scale import (
-    full_budget_block_reason,
     g3_is_current,
     sign_g3,
     write_agent_stats,
 )
 from amt.schemas import RunState, load_brief
-from amt.signoff import (
-    SignoffError,
-    g1_is_current,
-    g2_is_current,
-    search_block_reason,
-    sign_g1,
-    sign_g2,
-    write_ladder_report,
-    write_noise_report,
-)
-from amt.signoff import _resolve as resolve_under
-from amt.signoff import _spec_path as spec_path
 from amt.status import audit_rows, format_status
 from harness.data.contract import load_spec
 
@@ -80,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
     approve_parser = sub.add_parser("approve", help="unblock a run waiting on approval_mode")
     approve_parser.add_argument("--run-id", required=True)
 
-    noise_parser = sub.add_parser("noise", help="write the round-0 noise report for gate G1")
+    noise_parser = sub.add_parser("noise", help="write the round-0 noise report for the ready gate")
     noise_parser.add_argument("--brief", type=Path, required=True)
     noise_parser.add_argument("--observations", type=Path)
     noise_parser.add_argument("--plan", action="store_true")
@@ -88,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
     noise_parser.add_argument("--collect", action="store_true")
     noise_parser.add_argument("--root", type=Path, default=None)
 
-    ladder_parser = sub.add_parser("ladder", help="write the ladder report for gate G2")
+    ladder_parser = sub.add_parser("ladder", help="write the ladder report for the ready gate")
     ladder_parser.add_argument("--dataset", required=True)
     ladder_parser.add_argument("--observations", type=Path)
     ladder_parser.add_argument("--plan", action="store_true")
@@ -98,8 +96,13 @@ def main(argv: list[str] | None = None) -> int:
     ladder_parser.add_argument("--r1-train-fraction", type=float, default=None)
     ladder_parser.add_argument("--root", type=Path, default=None)
 
-    sign_parser = sub.add_parser("sign", help="sign gate G1 or G2")
-    sign_parser.add_argument("gate", choices=["g1", "g2", "g3"])
+    prep_parser = sub.add_parser("prep", help="build the dataset and the ready packet")
+    prep_parser.add_argument("--brief", type=Path, required=True)
+    prep_parser.add_argument("--repair", action="store_true")
+    prep_parser.add_argument("--root", type=Path, default=None)
+
+    sign_parser = sub.add_parser("sign", help="sign the ready gate or the optional calibration")
+    sign_parser.add_argument("gate", choices=["ready", "g3"])
     sign_parser.add_argument("--signer", required=True)
     sign_parser.add_argument("--brief", type=Path)
     sign_parser.add_argument("--dataset", default=None)
@@ -111,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
     stats_parser.add_argument("--run-id", required=True)
     stats_parser.add_argument("--root", type=Path, default=None)
 
-    gates_parser = sub.add_parser("gates", help="show whether G1 and G2 are signed")
+    gates_parser = sub.add_parser("gates", help="show whether the ready gate is signed")
     gates_parser.add_argument("--brief", type=Path, required=True)
     gates_parser.add_argument("--root", type=Path, default=None)
 
@@ -201,6 +204,8 @@ def main(argv: list[str] | None = None) -> int:
         ledger.annotate(root, args.job_run_id, args.note)
         print(f"annotated job {args.job_run_id}")
         return 0
+    if args.command == "prep":
+        return _prep(root, args)
     if args.command == "noise":
         return _noise(root, args)
     if args.command == "ladder":
@@ -403,19 +408,24 @@ def _ladder(root: Path, args: argparse.Namespace) -> int:
     return 0 if report.status == "pass" else 2
 
 
+def _prep(root: Path, args: argparse.Namespace) -> int:
+    try:
+        report, path = run_prep(root, _under_root(root, args.brief), repair=args.repair)
+    except (OSError, PrepError, SignoffError, ValueError) as exc:
+        print(str(exc))
+        return 1
+    print(f"{report.status} {path}")
+    return 0 if report.status == "pass" else 2
+
+
 def _sign(root: Path, args: argparse.Namespace) -> int:
     try:
-        if args.gate == "g1":
-            if args.brief is None or args.manifest is None:
-                print("g1 requires --brief and --manifest")
+        if args.gate == "ready":
+            if args.brief is None:
+                print("ready requires --brief")
                 return 1
-            record = sign_g1(
-                root,
-                _under_root(root, args.brief),
-                args.signer,
-                _under_root(root, args.manifest),
-            )
-        elif args.gate == "g3":
+            record = sign_ready(root, _under_root(root, args.brief), args.signer)
+        else:
             if args.brief is None or not args.run_id:
                 print("g3 requires --brief and --run-id")
                 return 1
@@ -425,12 +435,6 @@ def _sign(root: Path, args: argparse.Namespace) -> int:
                 args.signer,
                 args.run_id,
             )
-        else:
-            if not args.dataset:
-                print("g2 requires --dataset")
-                return 1
-            dataset, _fraction = _dataset(root, args.dataset)
-            record = sign_g2(root, dataset, args.signer)
     except (OSError, SignoffError, ValueError) as exc:
         print(str(exc))
         return 1
@@ -442,23 +446,15 @@ def _gates(root: Path, args: argparse.Namespace) -> int:
     brief_path = _under_root(root, args.brief)
     brief = load_brief(brief_path)
     if brief.candidate is not None:
-        print("walking skeleton; G1 and G2 are not required")
+        print("walking skeleton; the ready gate is not required")
         return 0
+    ready = "current" if ready_is_current(root, brief_path) else "missing"
+    calibration = "current" if g3_is_current(root) else "not signed"
+    print(f"ready {ready}; calibration {calibration}")
     reason = search_block_reason(root, brief, brief_path)
     if reason:
         print(reason)
         return 1
-    g1 = "current" if g1_is_current(root, brief_path) else "missing"
-    dataset = brief.resolved_dataset_spec() or ""
-    try:
-        name, _fraction = _dataset(root, dataset)
-    except (OSError, ValueError):
-        name = dataset
-    g2 = "current" if name and g2_is_current(root, name) else "missing"
-    g3 = "current" if g3_is_current(root) else "missing"
-    ready = full_budget_block_reason(root)
-    full = "ready" if ready is None else "not ready"
-    print(f"G1 {g1}; G2 {g2}; G3 {g3}; full budget {full}")
     return 0
 
 

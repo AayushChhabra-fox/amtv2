@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -85,6 +86,9 @@ def _run_json(args: list[str], *, cwd: Path) -> dict:
     return json.loads(text)
 
 
+_FAKE_LOCK = threading.RLock()
+
+
 class FakeJobs:
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -110,25 +114,26 @@ class FakeJobs:
         idempotency_token: str,
     ) -> str:
         _check_params(job, params)
-        payload = self._load()
-        existing = payload["submits"].get(idempotency_token)
-        if existing:
-            return existing["job_run_id"]
-        payload["new_submit_count"] = int(payload["new_submit_count"]) + 1
-        job_run_id = f"fake-{payload['new_submit_count']}"
-        mlflow_run_id = f"fake-mlflow-{payload['new_submit_count']}"
-        payload["submits"][idempotency_token] = {
-            "job": job,
-            "job_key": job_key,
-            "job_run_id": job_run_id,
-            "mlflow_run_id": mlflow_run_id,
-            "params": params,
-            "state": "TERMINATED",
-            "result": "SUCCESS",
-        }
-        _expand_matrix(self.root, payload, params, job_run_id)
-        self._save(payload)
-        return job_run_id
+        with _FAKE_LOCK:
+            payload = self._load()
+            existing = payload["submits"].get(idempotency_token)
+            if existing:
+                return existing["job_run_id"]
+            payload["new_submit_count"] = int(payload["new_submit_count"]) + 1
+            job_run_id = f"fake-{payload['new_submit_count']}"
+            mlflow_run_id = f"fake-mlflow-{payload['new_submit_count']}"
+            payload["submits"][idempotency_token] = {
+                "job": job,
+                "job_key": job_key,
+                "job_run_id": job_run_id,
+                "mlflow_run_id": mlflow_run_id,
+                "params": params,
+                "state": "TERMINATED",
+                "result": "SUCCESS",
+            }
+            _expand_matrix(self.root, payload, params, job_run_id)
+            self._save(payload)
+            return job_run_id
 
     def wait(self, job_run_id: str, timeout_s: int | None = None) -> dict:
         del timeout_s

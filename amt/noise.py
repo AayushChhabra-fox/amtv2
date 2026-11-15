@@ -1,4 +1,4 @@
-"""Round-0 noise floor for gate G1.
+"""Round-0 noise floor for the ready gate.
 
 Every reference score named by the dataset spec, plus popularity, random, and
 the LightGBM reference, is scored at R0–R3 with seeds 0, 1 and 2 on
@@ -18,9 +18,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from amt.schemas import Brief, Rung
+from amt.schemas import PROPOSED_MIN_EFFECT, Brief, Rung
 
-PROPOSED_MIN_EFFECT = 0.010
 MIN_EFFECT_MULTIPLE = 2.0
 ROUND0_RUNGS: tuple[Rung, ...] = ("R0", "R1", "R2", "R3")
 ROUND0_SEEDS: tuple[int, ...] = (0, 1, 2)
@@ -115,7 +114,9 @@ class NoiseReport(BaseModel):
     primary_metric: str
     proposed_min_effect: float = PROPOSED_MIN_EFFECT
     min_effect_multiple: float = MIN_EFFECT_MULTIPLE
+    min_effect_mode: Literal["auto", "explicit"] = "explicit"
     brief_min_effect: float
+    resolved_min_effect: float | None = None
     budget_total_dbu: float
     train_dbu_per_candidate: float | None = None
     r3_half_width: float | None = None
@@ -246,6 +247,9 @@ def build_noise_report(
 
     r3_width = half_widths.get("R3")
     required = None if r3_width is None else _round(MIN_EFFECT_MULTIPLE * r3_width)
+    mode: Literal["auto", "explicit"] = "auto" if brief.min_effect == "auto" else "explicit"
+    proposed = brief.effect_floor()
+    resolved = resolved_min_effect(proposed, required)
     remediation: list[str] = []
     if missing:
         status: Literal["pass", "revise", "incomplete"] = "incomplete"
@@ -253,15 +257,15 @@ def build_noise_report(
             f"{len(missing)} round-0 cells are missing. Score every baseline at R0–R3 "
             "with seeds 0, 1 and 2 on search_val."
         )
-    elif required is not None and brief.min_effect + 1e-12 < required:
+    elif mode == "explicit" and required is not None and proposed + 1e-12 < required:
         status = "revise"
         remediation.append(
-            f"min_effect {brief.min_effect:.6f} is below {MIN_EFFECT_MULTIPLE:.0f}× the R3 "
+            f"min_effect {proposed:.6f} is below {MIN_EFFECT_MULTIPLE:.0f}× the R3 "
             f"paired-delta half-width {r3_width:.6f} (required {required:.6f})."
         )
         remediation.append(
-            "Raise min_effect to at least the required value, or lengthen search_val "
-            "or add seeds and re-run round 0."
+            "Raise min_effect to at least the required value, or set min_effect to auto, "
+            "or lengthen search_val or add seeds and re-run round 0."
         )
         if required > PROPOSED_MIN_EFFECT:
             remediation.append(
@@ -270,6 +274,11 @@ def build_noise_report(
             )
     else:
         status = "pass"
+        if mode == "auto" and resolved is not None and proposed + 1e-12 < resolved:
+            remediation.append(
+                f"min_effect auto resolves to {resolved:.6f}, the larger of the proposed "
+                f"starting value {proposed:.3f} and {MIN_EFFECT_MULTIPLE:.0f}× the R3 half-width."
+            )
 
     metric = brief.problem.metric
     evaluation = ""
@@ -283,7 +292,9 @@ def build_noise_report(
         brief_name=brief.name or dataset,
         dataset=dataset,
         primary_metric=metric.name if metric is not None and metric.name else "",
-        brief_min_effect=brief.min_effect,
+        min_effect_mode=mode,
+        brief_min_effect=proposed,
+        resolved_min_effect=resolved,
         budget_total_dbu=brief.budget.total_dbu,
         train_dbu_per_candidate=brief.efficiency.train_dbu_per_candidate,
         r3_half_width=r3_width,
@@ -316,8 +327,7 @@ def render_noise_markdown(report: NoiseReport) -> str:
             if report.train_dbu_per_candidate is not None
             else "."
         ),
-        f"Brief min_effect {report.brief_min_effect:.6f}. "
-        f"Proposed starting value {report.proposed_min_effect:.3f}.",
+        _min_effect_line(report),
         "",
         "Half-widths are the binding paired-delta half-width at each rung: the larger of "
         "the day-blocked bootstrap half-width and the three-seed t interval. "
@@ -356,8 +366,8 @@ def render_noise_markdown(report: NoiseReport) -> str:
         lines.append(f"Missing cells: {len(report.missing)}.")
         lines.append("")
     lines.append(
-        "Gate G1 signs this report together with the brief, the dataset spec, "
-        "the manifest, the evaluation definition, min_effect, and the budget."
+        "The ready gate signs this report together with the brief, the dataset spec, "
+        "the manifest, the evaluation definition, the resolved min_effect, and the budget."
     )
     lines.append("")
     return "\n".join(lines)
@@ -447,6 +457,28 @@ def _check_cell(cell: Round0Cell) -> None:
             raise GateDataError(
                 f"{cell.baseline_id}/{cell.rung}/{cell.seed} has ci_hi below ci_lo"
             )
+
+
+def resolved_min_effect(proposed: float, required: float | None) -> float | None:
+    """``max(proposed, 2× R3 half-width)``. ``None`` until round 0 is complete."""
+
+    if required is None:
+        return None
+    return _round(max(float(proposed), float(required)))
+
+
+def _min_effect_line(report: NoiseReport) -> str:
+    resolved = ""
+    if report.resolved_min_effect is not None:
+        resolved = f" Resolved min_effect {report.resolved_min_effect:.6f}."
+    if report.min_effect_mode == "auto":
+        return (
+            f"Brief min_effect auto (proposed {report.brief_min_effect:.3f})." + resolved
+        )
+    return (
+        f"Brief min_effect {report.brief_min_effect:.6f}. "
+        f"Proposed starting value {report.proposed_min_effect:.3f}." + resolved
+    )
 
 
 def _round(value: float) -> float:

@@ -1,4 +1,4 @@
-"""Ladder validation for gate G2, including the eight designs."""
+"""Ladder validation for the ready gate, including the eight designs."""
 
 import time
 
@@ -280,3 +280,24 @@ def _rows(rng: np.random.Generator, start: int, stop: int) -> list[dict]:
                 }
             )
     return rows
+
+
+def test_modality_blocks_the_embedding_ladder_without_both_sides() -> None:
+    from amt.modality import ModalityProfile, ladder_blockers
+    from amt.schemas import Brief
+
+    brief = Brief.model_validate({"name": "nfy", "budget": {"total_dbu": 1}})
+    profile = ModalityProfile(
+        numeric_count=3,
+        prod_signal_columns=["feat__prod_signals__total_score"],
+        row_count=8,
+        query_count=2,
+    )
+    blocked = ladder_blockers(profile, brief)
+    assert blocked["embedding"] == "embedding ladder needs feat__profile__emb* and feat__item__emb*"
+    assert "lgbm" not in blocked
+    assert "neural" not in blocked
+    assert "linear_reweight" not in blocked
+
+    paired = profile.model_copy(update={"embedding_groups": ["item", "profile"]})
+    assert "embedding" not in ladder_blockers(paired, brief)

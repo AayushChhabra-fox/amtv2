@@ -6,10 +6,10 @@ import json
 from pathlib import Path
 
 from amt.config import load_settings
+from amt.gates import _RESERVED_SIGNERS
 from amt.job_params import build_job_params
 from amt.jobs_backend import make_backend
 from amt.ledger import read_rows
-from amt.signoff import _RESERVED_SIGNERS
 from amt.snapshot import upload_candidate
 from amt.tokens import issue_token
 

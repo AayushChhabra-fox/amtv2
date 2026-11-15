@@ -1,4 +1,4 @@
-"""Round-0 noise report for gate G1."""
+"""Round-0 noise report for the ready gate."""
 
 import json
 from pathlib import Path
@@ -24,7 +24,7 @@ NAMES = ["production", "recency", "popularity", "random", "lgbm_reference"]
 RUNGS = ["R0", "R1", "R2", "R3"]
 
 
-def _brief(min_effect: float = 0.01) -> Brief:
+def _brief(min_effect: float | str = 0.01) -> Brief:
     return Brief.model_validate(
         {
             "name": "nfy_article_rerank",
@@ -121,6 +121,20 @@ def test_half_width_sets_min_effect_and_records_either_lgbm_result() -> None:
     assert losing.status == "pass"
     assert losing.lgbm_vs_production is not None
     assert not losing.lgbm_vs_production.beats_production
+
+
+def test_auto_min_effect_resolves_above_the_proposed_floor() -> None:
+    report = build_noise_report(
+        _cells(width=0.006),
+        _brief(min_effect="auto"),
+        dataset="nfy_article_rerank",
+        reference_scores=["production", "recency"],
+    )
+    assert report.status == "pass"
+    assert report.min_effect_mode == "auto"
+    assert report.required_min_effect == pytest.approx(0.012)
+    assert report.resolved_min_effect == pytest.approx(0.012)
+    assert "auto resolves" in " ".join(report.remediation)
 
 
 def test_min_effect_below_twice_the_r3_width_asks_for_a_revision() -> None:
@@ -231,4 +245,4 @@ def test_noise_cli_writes_a_passing_report(
     assert code == 0
     captured = capsys.readouterr().out
     assert "pass" in captured
-    assert (tmp_path / "gates" / "g1" / "nfy_article_rerank" / "noise_report.md").is_file()
+    assert (tmp_path / "gates" / "ready" / "nfy_article_rerank" / "noise_report.md").is_file()

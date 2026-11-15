@@ -18,6 +18,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 ApprovalMode = Literal["none", "every_stage", "round_shortlist"]
 ScaleMode = Literal["search", "calibration", "small", "full"]
+LicensePolicy = Literal["commercial_only", "any"]
+# Starting floor when a brief leaves min_effect on auto. Prep raises it to
+# twice the measured R3 half-width when that floor is wider.
+PROPOSED_MIN_EFFECT = 0.01
 Operator = Literal["draft", "improve", "debug", "ablate", "combine"]
 Kind = Literal["model", "baseline"]
 Rung = Literal["R0", "R1", "R2", "R3"]
@@ -113,8 +117,18 @@ class ServingLimit(BaseModel):
     cost: str | None = None
 
 
+class Constraints(BaseModel):
+    """Serving and license limits. Prep intersects these with the dataset."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    allow_gpu_serving: bool = False
+    allow_external_weights: bool = False
+    license_policy: LicensePolicy = "commercial_only"
+
+
 class Efficiency(BaseModel):
-    """Placeholders until gate G1 replaces them."""
+    """Train cost and the serving budget the modality profiler reads."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -133,11 +147,14 @@ class EvalBlock(BaseModel):
 
 
 class DesignSpace(BaseModel):
-    """Families the planner may draft from."""
+    """Optional planner hints. ``families`` does not lock the ready gate."""
 
     model_config = ConfigDict(extra="forbid")
 
-    families: list[str] = Field(default_factory=list)
+    families: list[str] = Field(
+        default_factory=list,
+        description="Optional family hints. The planner may ignore them.",
+    )
     out_of_scope_for_mvp: list[str] = Field(default_factory=list)
     data: str | None = None
 
@@ -167,8 +184,8 @@ class Brief(BaseModel):
     scale: ScaleMode = Field(
         default="search",
         description=(
-            "search is the agent loop. calibration is the one-time G3 run. "
-            "small is the K=4 unattended run. full only records Phase 2 entry."
+            "search is the agent loop. calibration is an optional diagnostic. "
+            "small is the K=4 unattended run. full uses the signed brief budget."
         ),
     )
     dataset_spec: str | None = Field(
@@ -178,7 +195,15 @@ class Brief(BaseModel):
     problem: Problem = Field(default_factory=Problem)
     task: TaskBlock = Field(default_factory=TaskBlock)
     reference: Reference | None = None
-    min_effect: float = 0.01
+    min_effect: float | Literal["auto"] = Field(
+        default="auto",
+        description=(
+            "Smallest effect worth promoting. auto is resolved at prep to "
+            "max(0.010, 2× the R3 paired-delta half-width) and locked in the "
+            "ready gate. The brief file is not edited."
+        ),
+    )
+    constraints: Constraints = Field(default_factory=Constraints)
     efficiency: Efficiency = Field(default_factory=Efficiency)
     eval: EvalBlock | None = None
     budget: Budget
@@ -205,6 +230,13 @@ class Brief(BaseModel):
         if self.dataset_spec:
             return self.dataset_spec
         return self.problem.dataset_spec
+
+    def effect_floor(self) -> float:
+        """Numeric floor. ``auto`` is the proposed 0.010 until prep locks a value."""
+
+        if self.min_effect == "auto":
+            return PROPOSED_MIN_EFFECT
+        return float(self.min_effect)
 
 
 class Candidate(BaseModel):

@@ -266,6 +266,7 @@ def test_two_surfaces_hashes_and_holdouts(tmp_path: Path) -> None:
         left = build(spec_dir, output_dir=first, backend="local", connection=connection)
         right = build(spec_dir, output_dir=second, backend="local", connection=connection)
         assert left["splits"]["train"]["content_hash"] == right["splits"]["train"]["content_hash"]
+        assert left["modality"]["row_count"] > 0
         assert left["samples"] == right["samples"]
         manifests[entity] = (left, first)
 

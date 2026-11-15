@@ -1,4 +1,4 @@
-"""Ladder validation for gate G2.
+"""Ladder validation for the ready gate.
 
 Each known-good / known-bad pair is scored at R1–R3 with two seeds on
 ``search_val``. Within a family the good design must rank above the bad one

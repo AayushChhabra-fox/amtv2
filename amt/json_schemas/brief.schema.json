@@ -80,11 +80,39 @@
       "title": "Budget",
       "type": "object"
     },
+    "Constraints": {
+      "additionalProperties": false,
+      "description": "Serving and license limits. Prep intersects these with the dataset.",
+      "properties": {
+        "allow_gpu_serving": {
+          "default": false,
+          "title": "Allow Gpu Serving",
+          "type": "boolean"
+        },
+        "allow_external_weights": {
+          "default": false,
+          "title": "Allow External Weights",
+          "type": "boolean"
+        },
+        "license_policy": {
+          "default": "commercial_only",
+          "enum": [
+            "commercial_only",
+            "any"
+          ],
+          "title": "License Policy",
+          "type": "string"
+        }
+      },
+      "title": "Constraints",
+      "type": "object"
+    },
     "DesignSpace": {
       "additionalProperties": false,
-      "description": "Families the planner may draft from.",
+      "description": "Optional planner hints. ``families`` does not lock the ready gate.",
       "properties": {
         "families": {
+          "description": "Optional family hints. The planner may ignore them.",
           "items": {
             "type": "string"
           },
@@ -116,7 +144,7 @@
     },
     "Efficiency": {
       "additionalProperties": false,
-      "description": "Placeholders until gate G1 replaces them.",
+      "description": "Train cost and the serving budget the modality profiler reads.",
       "properties": {
         "train_dbu_per_candidate": {
           "anyOf": [
@@ -432,7 +460,7 @@
     },
     "scale": {
       "default": "search",
-      "description": "search is the agent loop. calibration is the one-time G3 run. small is the K=4 unattended run. full only records Phase 2 entry.",
+      "description": "search is the agent loop. calibration is an optional diagnostic. small is the K=4 unattended run. full uses the signed brief budget.",
       "enum": [
         "search",
         "calibration",
@@ -473,9 +501,21 @@
       "default": null
     },
     "min_effect": {
-      "default": 0.01,
-      "title": "Min Effect",
-      "type": "number"
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "const": "auto",
+          "type": "string"
+        }
+      ],
+      "default": "auto",
+      "description": "Smallest effect worth promoting. auto is resolved at prep to max(0.010, 2\u00d7 the R3 paired-delta half-width) and locked in the ready gate. The brief file is not edited.",
+      "title": "Min Effect"
+    },
+    "constraints": {
+      "$ref": "#/$defs/Constraints"
     },
     "efficiency": {
       "$ref": "#/$defs/Efficiency"

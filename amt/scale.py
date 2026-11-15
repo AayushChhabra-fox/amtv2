@@ -1,9 +1,9 @@
-"""G3 calibration, the K=4 unattended run, and Phase 2 entry.
+"""Optional calibration and the K=4 unattended run.
 
-Calibration is one K=1 lineage with ``approval_mode: every_stage``. A human
-signs it once. Later briefs do not repeat it. The small run keeps K=4 with
-``approval_mode: none`` and records bug rate, revisions, tokens, and
-wall-clock. Full budget only checks that those two steps passed.
+Calibration is one K=1 lineage with ``approval_mode: every_stage``. It is a
+diagnostic, not a blocker for search, small, or full. The small run keeps K=4
+with ``approval_mode: none`` and records bug rate, revisions, tokens, and
+wall-clock.
 """
 
 from __future__ import annotations
@@ -15,10 +15,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from amt.ledger import read_rows
-from amt.paths import candidate_dir
-from amt.schemas import Brief, RunState, load_brief
-from amt.signoff import (
+from amt.gates import (
     SignoffError,
     _read_envelope,
     _relative,
@@ -27,6 +24,9 @@ from amt.signoff import (
     _write_envelope,
     brief_key,
 )
+from amt.ledger import read_rows
+from amt.paths import candidate_dir
+from amt.schemas import Brief, RunState, load_brief
 from amt.status import audit_rows
 
 PROMPT_ROLES = ("planner", "critic", "implementer", "reviewer")
@@ -257,9 +257,13 @@ def scale_block_reason(
     k: int,
     approval_mode: str,
 ) -> str | None:
-    """Why this scale setting must not start. ``search`` is always allowed here."""
+    """Why this scale setting must not start.
 
-    if scale == "search" or scale == "full":
+    Search, small, and full are not gated on calibration. Calibration itself
+    still runs once.
+    """
+
+    if scale in {"search", "full"}:
         return None
     if scale == "calibration":
         return calibration_block_reason(root, run_id)
@@ -268,11 +272,6 @@ def scale_block_reason(
             return "The small unattended run requires K=4."
         if approval_mode != "none":
             return "The small unattended run requires approval_mode none."
-        if not g3_is_current(root):
-            return (
-                "G3 is not signed. Run one K=1 calibration with approval_mode "
-                "every_stage and sign it before the unattended run."
-            )
         return None
     return f"Unknown scale {scale}."
 
@@ -509,15 +508,9 @@ def passing_small_receipt(root: Path) -> SmallRunReceipt | None:
 
 
 def full_budget_block_reason(root: Path) -> str | None:
-    """Phase 2 may start only after G3 is signed and a small run has passed."""
+    """Full budget is not gated on calibration or a small-run receipt."""
 
-    if not g3_is_current(root):
-        return (
-            "Full budget is not ready. G3 is not signed. Run one K=1 calibration "
-            "with approval_mode every_stage and sign it."
-        )
-    if passing_small_receipt(root) is None:
-        return "Full budget is not ready. No passing K=4 small-budget run is recorded."
+    del root
     return None
 
 
