@@ -30,8 +30,12 @@ task:
     - item_index and display position
     - impression, click, read, and dwell fields
     - anything timestamped after request_ts
-# Round 0 on whole-day splits: R3 half-width 0.009789, so at least 0.019578.
-min_effect: 0.02
+# Prep locks this from the round-0 floor. Do not edit the file to raise it.
+min_effect: auto
+constraints:
+  allow_gpu_serving: false
+  allow_external_weights: false
+  license_policy: commercial_only
 efficiency:
   train_dbu_per_candidate: 5
   serving:
@@ -40,13 +44,6 @@ budget:
   total_dbu: 40
   max_concurrent_jobs: 2
 mode: both
-design_space:
-  families:
-    - "xgboost: XGBoost learning-to-rank with rank:ndcg (or rank:pairwise), qid = request_id and relevance grade as the label, over all serving-time features"
-    - "deep_nn: PyTorch deep ranker (MLP or deep-and-cross) over user, article, overlap, and production-signal features, trained with a per-request listwise or pairwise loss, CPU only"
-    - "random_forest: scikit-learn random forest on relevance grade, scores sorted within each request"
-    - "catboost: CatBoostRanker with YetiRank (or YetiRankPairwise), group_id = request_id and relevance grade as the label, with article category, retrieval bucket, and other low-cardinality columns passed as native categorical features, CPU only"
-  data: existing sources only
 off_limits:
   - eval and holdout splits
   - metric code

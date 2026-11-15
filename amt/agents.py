@@ -276,7 +276,9 @@ def run_role(
                 spec=spec_name,
             )
         elif mode == "fake":
-            output = _run_fake(role, root, run_id, node_id=node_id)
+            output, retries = _call_with_retry(
+                lambda: _run_fake(role, root, run_id, node_id=node_id)
+            )
         else:
             output = _run_stub(role, brief, root, run_id)
         if role in {"planner", "critic"}:
@@ -395,6 +397,21 @@ def _token_count(output: dict) -> int | None:
 def _is_transient(detail: str) -> bool:
     text = detail.lower()
     return any(marker in text for marker in _TRANSIENT_MARKERS)
+
+
+def _call_with_retry(operation):
+    """Retry a transient agent failure. The delays are 5s, then 15s, then 45s."""
+
+    last = "agent call failed"
+    for attempt, delay in enumerate(_RETRY_BACKOFF_S):
+        try:
+            return operation(), attempt
+        except AgentCallError as exc:
+            last = str(exc)
+            if not _is_transient(last) or attempt + 1 == len(_RETRY_BACKOFF_S):
+                raise AgentCallError(last, retries=attempt) from exc
+            time.sleep(delay + random.uniform(0, delay * 0.2))
+    raise AgentCallError(last, retries=len(_RETRY_BACKOFF_S) - 1)
 
 
 def _lease_path(root: Path, pid: int) -> Path:
@@ -552,7 +569,10 @@ def _run_fake(role: str, root: Path, run_id: str, *, node_id: str | None) -> dic
     payload["cursor"] = cursor + 1
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     if call.get("error"):
-        raise RuntimeError(str(call["error"]))
+        message = str(call["error"])
+        if _is_transient(message):
+            raise AgentCallError(message)
+        raise RuntimeError(message)
     files = call.get("files") or {}
     if isinstance(files, dict) and files:
         _write_scripted_files(root, run_id, files)

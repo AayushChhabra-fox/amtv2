@@ -1,8 +1,13 @@
 # AMT command line
 
-`amt` is the control-loop command. It runs a brief, deploys the bundle, builds a dataset, submits the round-0 and ladder matrices, and scores the final holdout. The only steps that stay manual are the gate signatures. The [Phase 2 runbook](phase2_runbook.md) is the sequence for `briefs/nfy_article_rerank.yaml`. Run `briefs/nfy_demo.yaml` first.
+`amt` runs two pipelines with a human signature between them, then one final signature after search.
 
-Run every command from the repository root. `run`, `status`, `stop`, and `approve` use the current directory. The other commands take `--root` and default to the current directory.
+1. `amt prep` builds the dataset and writes the readiness packet.
+2. `amt sign ready` locks that packet.
+3. `amt run` searches until it prints an outcome. `amt resume` continues a saved run.
+4. `amt final` opens the final holdout once.
+
+The [operator runbook](phase2_runbook.md) is that sequence for `briefs/nfy_demo.yaml` and `briefs/nfy_demo_v2.yaml`. Run every command from the repository root. `run` uses the current directory. The other commands take `--root` and default to the current directory.
 
 ```bash
 uv run amt --help
@@ -13,15 +18,19 @@ uv run amt <command> --help
 
 ## Configuration
 
-Copy `.env.example` to `.env`. Do not commit `.env`. `amt` loads it before parsing arguments. A real environment variable wins over `.env`, and `.env` wins over the defaults in `amt/config.py`. A limit in `.env` can only tighten a brief: concurrency is the smaller of `AMT_MAX_CONCURRENT_JOBS` and `budget.max_concurrent_jobs`. Budgets stay on the brief.
+Copy `.env.example` to `.env`. Do not commit `.env`. `amt` loads it before parsing arguments. A real environment variable wins over `.env`, and `.env` wins over the defaults in `amt/config.py`. A limit in `.env` can only tighten a brief: concurrency is the smaller of `AMT_MAX_CONCURRENT_JOBS` and `budget.max_concurrent_jobs`. The DBU budget stays on the brief and is locked again at `amt sign ready`.
 
 Auth is one of three methods: `DATABRICKS_TOKEN`, a service principal (`DATABRICKS_CLIENT_ID` and `DATABRICKS_CLIENT_SECRET`), or `DATABRICKS_CONFIG_PROFILE`. `dbx_host` and `dbx_token` are still copied onto the Databricks names when those are unset.
 
 `AMT_CATALOG`, `AMT_SCHEMA`, `AMT_ARTIFACT_VOLUME`, and `AMT_MLFLOW_EXPERIMENT_ROOT` select the workspace target. The experiment for a brief is `<root>/<brief name>`. `amt deploy` passes those values into the bundle as `--var`.
 
-`AMT_CLUSTER_ID` runs every job on that cluster. Leave it blank to use the job clusters in `resources/*.job.yml`. Confirmation uses a one-time token on the volume, because an existing cluster cannot take per-run environment variables. Latency on a shared cluster during search is `latency_suspect`; the hard latency kill applies at confirmation, which runs with no other AMT job in flight. Spend is wall-clock times `AMT_DBU_PER_HOUR`.
+`AMT_CLUSTER_ID` runs every job on that cluster. Leave it blank to use the job clusters in `resources/*.job.yml`. On a shared cluster, search latency is `latency_suspect`. The hard latency kill applies when that run is the only AMT job in flight. Spend is wall-clock times `AMT_DBU_PER_HOUR`.
 
-`AMT_GPU_CLUSTER_ID` or `AMT_GPU_NODE_TYPE` is required for `device: gpu`. With neither set, preflight drops GPU proposals.
+`AMT_GPU_CLUSTER_ID` or `AMT_GPU_NODE_TYPE` is required before a proposal with `device: gpu` can run. The brief also has to set `constraints.allow_gpu_serving: true`. With the default `false`, GPU families are out of the viable set.
+
+`AMT_HF_OFFLINE_CACHE` is the Unity Catalog volume that already holds any HuggingFace snapshot a candidate is allowed to read. `from_pretrained` and other hub downloads are rejected unless this is set. Example: `/Volumes/product_api_dev/amt/amt_artifacts/hf`.
+
+`AMT_DATASET_REPAIR_MAX_ATTEMPTS` (default 3) and `AMT_DATASET_REPAIR_MAX_DBU` (default 10) cap `amt prep --repair`. The fixer may edit `datasets/<spec>/features/*.sql` only. Each attempt re-runs the 90-second slice. Diffs are kept under `runs/dataset-repair/<spec>/<n>/`.
 
 `amt doctor` prints the auth method and checks the workspace, the clusters, and `cursor-agent status`.
 
@@ -34,28 +43,86 @@ Agent calls use `AMT_AGENT_BACKEND`:
 | `auto` | Uses `cursor` when `cursor-agent status` shows a login, otherwise records the miss and uses the stub. |
 | `fake` | Test double. |
 
-Model and limit variables live in `.env.example`: `AMT_MODEL_PLANNER`, `AMT_MODEL_CRITIC`, `AMT_MODEL_IMPLEMENTER`, `AMT_MODEL_REVIEWER`, `AMT_AGENT_TIMEOUT_S` (default 600), `AMT_TOKEN_CAP` (default 32000), `CURSOR_API_KEY`. Job submission uses `AMT_JOBS_BACKEND` (`databricks` or `fake`). `AMT_<JOB>_JOB_ID` overrides the id from the bundle summary for `TRAIN`, `CONFIRM`, `FINAL_HOLDOUT`, `BUILD_DATASET`, and `HELLO_TRAIN`.
+Model and limit variables live in `.env.example`: `AMT_MODEL_PLANNER`, `AMT_MODEL_CRITIC`, `AMT_MODEL_IMPLEMENTER`, `AMT_MODEL_REVIEWER`, `AMT_AGENT_TIMEOUT_S` (default 600), `AMT_TOKEN_CAP` (default 32000), `CURSOR_API_KEY`. A transient agent error (`resource_exhausted`, `[internal]`, `Connection lost`, timeout) is retried three times. Job submission uses `AMT_JOBS_BACKEND` (`databricks` or `fake`). `AMT_<JOB>_JOB_ID` overrides the id from the bundle summary for `train`, `confirm`, `final_holdout`, and `build_dataset`.
 
 ## Commands
 
 | Command | Purpose |
 | --- | --- |
-| `deploy` | Build the wheel, deploy the bundle, and record the harness hash. |
+| `prep` | Doctor, deploy if stale, preflight, build, and parallel round-0 noise and ladder. |
+| `sign ready` | Lock the readiness packet. |
+| `run` | Search until the outcome is printed. |
+| `resume` | Continue a saved run, including one that escalated. |
+| `final` | Open the final holdout once. |
+| `deploy` | Build the wheel and deploy the bundle. |
 | `doctor` | Check auth, the workspace, clusters, and the agent CLI. |
-| `dataset build` | Submit the dataset build. `--wait` blocks until the job finishes. |
-| `run` | Advance one brief until it reports, escalates, or waits for approval. |
-| `final` | Open the final holdout once for a run. |
-| `reproduce` | Rerun one ledger row and compare it with its interval. |
+| `dataset build` | Submit the dataset build. `amt prep` does this for you. |
+| `dataset preflight` | Run the 90-second slice. `--repair` fixes feature SQL first. |
+| `dataset revert` | Restore feature SQL from the first repair snapshot. |
+| `noise` | Write the round-0 noise report. `amt prep` does this for you. |
+| `ladder` | Write the ladder report. `amt prep` does this for you. |
+| `gates` | Show whether the ready signature is current. |
 | `status` | Print stage, spend, jobs, live nodes, and kills. |
 | `stop` | Ask a run to escalate at the next stage. |
 | `approve` | Unblock one approval pause. |
-| `noise` | Write the round-0 noise report for gate G1. |
-| `ladder` | Write the ladder report for gate G2. |
-| `sign` | Record a human signature for G1, G2, or G3. |
-| `gates` | Show whether a search brief is allowed to start. |
 | `stats` | Print agent statistics for one run. |
+| `reproduce` | Rerun one ledger row and compare it with its interval. |
+| `sign g3` | Sign the optional calibration packet. |
 
-Exit status is `0` for a finished report or a clean audit. `run` returns `1` when the stage is anything else, including an approval pause and `ESCALATE`. `noise` and `ladder` return `2` when the report is `revise`, `fail`, or `incomplete`, and `1` when the input cannot be read. `status --audit` returns `1` when any ledger row fails the trace check. `gates` returns `1` when a search brief is blocked.
+Exit status is `0` when a report finishes, including `no_winner`. `run` and `resume` return `1` on `ESCALATE` or an approval pause. `prep` returns `2` when the packet is not a pass, and `1` when it cannot be built. `sign` returns `1` when the packet is not signable. `final` returns `1` when there is no R3 survivor or the holdout was already opened. `status --audit` returns `1` when a ledger row fails the trace check. `gates` returns `1` when a search brief is blocked.
+
+### `prep`
+
+```bash
+uv run amt prep --brief <brief> [--repair]
+```
+
+Pipeline A. The order is fixed:
+
+1. `doctor`.
+2. `deploy` when `harness/` or `resources/` is newer than `.amt/deployed.json`. A spec edit does not by itself force a harness redeploy.
+3. The 90-second dataset preflight: local split and metric checks, then a 1-hour slice (`EXPLAIN`, key and point-in-time checks, label support).
+4. With `--repair`, a repairable error in `datasets/<spec>/features/*.sql` is handed to `dataset_fixer` and the slice runs again, up to the attempt and DBU caps. Errors in `queries.sql`, `candidates.sql`, `labels.sql`, splits, leakage, or the harness stop here with a diagnosis.
+5. The full Spark build. It writes Delta splits, Volume Parquet caches, and `manifest.json`.
+6. The manifest is copied to `gates/ready/<brief>/manifest.json`.
+7. Round-0 noise and the ladder are submitted together, then collected.
+
+The brief file is not edited. `min_effect: auto` is resolved to `max(0.010, 2× the R3 paired-delta half-width)` and stored on the packet.
+
+Outputs, all under `gates/ready/<brief>/`:
+
+- `ready_report.json` and `ready_report.md`
+- `manifest.json`
+- `noise_report.json` and `noise_report.md`
+- `ladder_report.json` and `ladder_report.md`
+
+Accepted feature-SQL diffs are listed on the packet and stored under `runs/dataset-repair/<spec>/<n>/`.
+
+### `sign ready`
+
+```bash
+uv run amt sign ready --brief <brief> --signer "Your Name"
+```
+
+The signer is a person's name. `auto`, `amt`, `system`, `orchestrator`, and `agent` are rejected. A packet whose status is not `pass` is rejected.
+
+This writes `gates/ready/<brief>/ready.json`. Commit that file. It locks the problem and task hash, the spec hash, the manifest hash, accepted repair hashes, the resolved `min_effect`, the DBU budget, and the viable ladder families. Optional `design_space.families` hints are not part of the hash. Editing the brief's problem, task, constraints, budget, the spec, or the manifest makes the signature stale.
+
+`amt sign g3` remains the optional calibration signature. It is not required before `amt run`.
+
+### `gates`
+
+```bash
+uv run amt gates --brief <brief>
+```
+
+A walking-skeleton brief (one with `candidate:`) prints `walking skeleton; the ready gate is not required` and exits `0`. A search brief prints:
+
+```text
+ready current; calibration not signed
+```
+
+`current` means `ready.json` still matches the brief, the spec, the manifest, and the repair diffs. Exit `1` means `amt run` would escalate instead of starting.
 
 ### `run`
 
@@ -65,161 +132,114 @@ uv run amt run <brief> [--run-id ID] [--fresh]
   [--scale search|calibration|small|full]
 ```
 
-The run id is `--run-id`, then `run_id` on the brief, then `name`, then the filename stem. State is `runs/<id>/state.json`. The same command resumes that file. A job key already recorded in `submitted_jobs` is not submitted again. `--fresh` deletes `state.json` before starting. Use it after a gate rejection or an escalation you intend to replace. Leave it off when you mean to resume.
+The run id is `--run-id`, then `run_id` on the brief, then `name`, then the filename stem. State is `runs/<id>/state.json`. `--fresh` deletes that file before starting. Use it after a stale ready signature you intend to replace. Leave it off when you mean to resume; prefer `amt resume` once the run has escalated.
 
-`--approval-mode` overrides the brief, except on a calibration run. `none` writes `runs/<id>/round_<n>.md` and continues. `round_shortlist` pauses after the critic. `every_stage` pauses after each stage. A pause exits `1` and writes `runs/<id>/APPROVAL.md`. `amt status` shows the next stage. Continue with `approve`, then the same `run` command.
+A search brief with no pinned candidate stops in `ESCALATE` until `ready.json` is current. The message says to prep, sign, and re-run with `--fresh`.
 
-`--scale` overrides the brief:
+On a signed brief the loop materializes `lgbm_reference` as node `c00` under `runs/<id>/candidates/c00/`, then drafts families from the modality profile and the brief constraints. A `design_space.families` list is an optional hint, not a menu the planner must follow.
 
-| Scale | What it does |
-| --- | --- |
-| `search` | Default. Draft, improve, combine, then confirmation of promoted nodes. Requires a current G1 and G2 on a brief with no pinned candidate. |
-| `calibration` | One-time G3. Forces K=1 and `approval_mode: every_stage`. Stops at the end of that lineage, before confirmation, so the holdouts stay closed. A second calibration is refused. |
-| `small` | K=4 unattended run. Requires `approval_mode: none` and a signed G3. Round 1 proposes 8 drafts and keeps 4 across at least 3 families. |
-| `full` | Writes `runs/<id>/phase2_entry.md` when G3 is signed and a small run has passed. Starts no training. |
+Each round resets its revision counters. A critic batch that passes at least one candidate drops the unrevised stragglers and continues. A candidate that raises at R1 is sent back through `DEBUG` (up to 3 attempts) while its siblings keep running. A cluster `INTERNAL_ERROR` is retried once, then the run escalates with the node still ready to submit.
 
-A brief with a `candidate:` block is the walking skeleton (`briefs/toy.yaml`). Scale values other than `search` are refused for that brief. A search brief with no pinned candidate stops in `ESCALATE` until G1 and G2 are current. The message tells you to sign the gate and re-run with `--fresh`.
+Progress lines go to stderr as `[HH:MM:SS] [ROUND r | STAGE]`.
 
-On the Databricks backend, `run` submits `train` for a search brief and `confirm` for confirmation. A walking-skeleton brief (one with `candidate:`) still submits `hello_train`. Job ids come from `amt deploy`'s bundle summary, unless `AMT_<JOB>_JOB_ID` is set. Each candidate is uploaded to `<volume>/candidates/<run_id>/<node_id>/<git_sha>/` and that `model.py` is the `--model` path. The snapshot is not overwritten. Search submits include `--baseline-scores` for the same-rung LightGBM reference from round 0. If those scores are missing, the run escalates with `run amt noise --submit first`.
+A finished search prints one line and exits `0`:
 
-A submit is refused when `harness/`, `datasets/`, or `resources/` have changed since `amt deploy`. The message is `redeploy: harness changed since deploy`. The idempotency token is `<run_id>:<candidate_id>/<rung>/<seed>`.
+```text
+OUTCOME: winner_promoted
+OUTCOME: baseline_c00_promoted
+OUTCOME: no_winner
+```
 
-Stopping the process and starting the same command again resumes. `amt stop` is the halt that escalates on the next stage boundary.
+`winner_promoted` means a candidate cleared the production bar and beat `c00`. `baseline_c00_promoted` means `c00` cleared that bar and no candidate beat it. `no_winner` means nothing cleared it. The same value is in `runs/<id>/report.json`. `ESCALATE` exits `1` and writes `runs/<id>/ESCALATE.md` plus a `report.json` with no outcome.
 
-### `status`
+`--approval-mode` overrides the brief. `none` writes `runs/<id>/round_<n>.md` and continues. `round_shortlist` pauses after the critic. `every_stage` pauses after each stage. A pause exits `1` and writes `runs/<id>/APPROVAL.md`. Continue with `amt approve --run-id ID`, then `amt resume --run-id ID`.
+
+`--scale calibration` is the optional one-time diagnostic. It forces K=1 and `approval_mode: every_stage`, and it stops before confirmation. `small` and `full` are still accepted; they do not replace the ready gate.
+
+On the Databricks backend, search submits `train` and confirmation submits `confirm`. Each candidate is uploaded to `<volume>/candidates/<run_id>/<node_id>/<git_sha>/`. A submit is refused when `harness/` or `resources/` have changed since `amt deploy`. The message is `redeploy: harness changed since deploy`.
+
+### `resume`
+
+```bash
+uv run amt resume --run-id ID
+```
+
+Loads `runs/<id>/state.json` and continues. A run that stopped in `ESCALATE` restarts at the stage that stopped it. A budget refusal restarts at submit after you raise `budget.total_dbu` on a walking-skeleton brief. On a search brief the budget is inside `ready.json`, so a higher pool needs `amt prep` and `amt sign ready` again before a fresh run id. A cluster escalation leaves the candidate ready; `amt resume` submits that job again. A job key that already has a run id is not submitted twice.
+
+### `final`
+
+```bash
+uv run amt final --run-id ID --signer "Your Name"
+```
+
+Opens `final_holdout` once for the top R3 survivors (kept or promoted), plus production and the LightGBM reference. A second call is refused. With no R3 survivor the command exits `1` and the holdout stays closed. A final delta outside the winner's select interval is an overfit flag in `runs/<id>/final_holdout.md`.
+
+### `status`, `stop`, `approve`
 
 ```bash
 uv run amt status [--run-id ID] [--audit]
-```
-
-`--run-id` defaults to `toy`. The report is the stage, the round, spent DBU against the pool, each submitted job, a table of live nodes, and every kill with its reason.
-
-`--audit` checks that every ledger row for the run has a job run id, an MLflow run id, and a git SHA other than `unknown`. For a non-fake job id it also calls the Jobs API and the MLflow get-run API. `audit PASS` is the success line. Any problem prints `audit FAIL` and the process exits `1`.
-
-### `stop`
-
-```bash
 uv run amt stop [--run-id ID]
-```
-
-Writes `runs/<id>/STOP`. The default id is `toy`. The orchestrator reads the file at the next stage boundary, sets the stage to `ESCALATE`, and writes `runs/<id>/ESCALATE.md`. It does not cancel a Databricks run already in flight.
-
-### `approve`
-
-```bash
 uv run amt approve --run-id ID
 ```
 
-Writes `runs/<id>/APPROVE`. The next `amt run` of that id consumes the file and clears the pause. This command does not resume the loop by itself.
+`--run-id` defaults to `toy` for `status` and `stop`. The status report is the stage, the round, the outcome when one is set, spent DBU against the pool, each submitted job, live nodes, and every kill.
 
-### `noise`
+`--audit` checks that every ledger row for the run has a job run id, an MLflow run id, and a git SHA other than `unknown`. For a non-fake job id it also calls the Jobs API and the MLflow get-run API.
 
-```bash
-uv run amt noise --brief <brief> [--plan] [--observations <file>] [--root DIR]
-```
+`stop` writes `runs/<id>/STOP`. The orchestrator escalates at the next stage boundary. It does not cancel a Databricks run already in flight.
 
-Gate G1. `--plan` prints the round-0 `train` parameters and does not submit them. `--submit` launches one matrix job per rung (the LightGBM cells also write keyed scores). `--collect` waits, writes `round0.json`, and builds the noise report. With neither flag, `amt noise` submits and then collects. A second `--submit` does not launch a rung whose run is still going or succeeded; a failed rung is submitted again. Each rung's matrix file is uploaded to `<volume>/matrices/<run>/` so the cluster can read it.
+`approve` writes `runs/<id>/APPROVE`. The next `amt resume` of that id consumes the file.
 
-`--observations` reads a JSON list, or an object with an `observations` list, and writes:
-
-- `gates/g1/<brief-name>/noise_report.json`
-- `gates/g1/<brief-name>/noise_report.md`
-
-The brief name is `name` on the brief, or the filename stem. Each cell is one baseline, rung, and seed on `search_val`:
-
-```json
-{
-  "baseline_id": "lgbm_reference",
-  "rung": "R3",
-  "seed": 0,
-  "split": "search_val",
-  "metric": 0.41,
-  "delta_point": 0.004,
-  "delta_ci_lo": 0.001,
-  "delta_ci_hi": 0.007
-}
-```
-
-`metric` is graded NDCG@10 (`ndcg@10_graded` on the train task output). A nested `delta` object with `point`, `ci_lo`, and `ci_hi` is accepted. `production` cells do not need a delta. Every other cell needs a finite paired delta against the same-rung production scores, with `ci_hi` at least `ci_lo`. A holdout split is rejected.
-
-The report passes when every cell is present and `min_effect` on the brief is at least twice the R3 paired-delta half-width. The half-width at a rung is the larger of the day-blocked bootstrap half-width and the three-seed t interval. A missing cell is `incomplete`. A `min_effect` under the floor is `revise`. Either result exits `2` and lists the remediation in the report. Whether LightGBM beats production is recorded either way.
-
-Changing `min_effect` or the budget after the report means running `noise` again before `sign`. The signature hashes the report.
-
-### `ladder`
+### `dataset`
 
 ```bash
-uv run amt ladder --dataset <spec-or-name> [--plan] [--observations <file>]
-  [--skip-r1 FAMILY] [--r1-train-fraction FLOAT] [--root DIR]
+uv run amt dataset preflight --spec <spec> [--brief <brief>] [--repair] [--local-only]
+uv run amt dataset build --spec <spec> [--brief <brief>] [--preflight] [--repair] [--wait]
+uv run amt dataset revert --spec <spec>
 ```
 
-Gate G2, once per dataset and family set. `--dataset` may be `datasets/nfy_article_rerank` or the spec name `nfy_article_rerank`. `--plan` prints the 48 jobs. `--submit` and `--collect` work the same way as `amt noise`: three matrix runs, one per rung.
+`preflight` is the 90-second check. `--local-only` skips the slice. `--repair` is the same fixer `amt prep --repair` uses. `revert` copies feature SQL back from the first snapshot under `runs/dataset-repair/<spec>/`.
 
-| Family | Good design | Bad design |
-| --- | --- | --- |
-| `lgbm` | `lgbm_full` | `lgbm_recency_category` |
-| `neural` | `neural_normal` | `neural_label_shuffled` |
-| `embedding` | `embedding_trained` | `embedding_random_projection` |
-| `linear_reweight` | `linear_fitted` | `linear_label_shuffled` |
+### `noise` and `ladder`
 
-The `baseline` parameter of each job is the design id. `harness/train.py` treats that id as a ladder ranker.
-
-A cell is `design_id`, `rung`, `seed`, `split`, and `metric`. The report passes when the good design ranks above the bad one in each family at every checked rung, and Kendall tau-b between the R1 and R3 scores is at least 0.6. A design that needs columns the dataset lacks logs `status=unsupported` instead of failing. When every cell of a family is unsupported, the report lists the family with the reason and checks the others. The NFY specs have no embedding columns, so `embedding` is listed there. Reports land in `gates/g2/<dataset>/<family-key>/`, where the family key is the sorted family names joined with `+` (`embedding+lgbm+linear_reweight+neural`).
-
-`--skip-r1 FAMILY` drops R1 from the order check for that family. Repeat the flag for more than one family. `--r1-train-fraction` records the R1 sample fraction used for a re-run. Both values are stored on the report and on the G2 signature. A failure only at R1 is the case for skipping R1. A low tau with the within-family order intact is the case for a higher R1 fraction. A failure at R2 or R3 stays a failure.
-
-### `sign`
+`amt prep` submits and collects both. The standalone commands are there when you need to rebuild one report from observations you already have:
 
 ```bash
-uv run amt sign g1 --brief <brief> --manifest <file> --signer "Your Name"
-uv run amt sign g2 --dataset <spec-or-name> --signer "Your Name"
-uv run amt sign g3 --brief <brief> --run-id ID --signer "Your Name"
+uv run amt noise --brief <brief> [--plan] [--submit] [--collect] [--observations <file>]
+uv run amt ladder --dataset <spec-or-name> [--plan] [--submit] [--collect]
+  [--observations <file>] [--skip-r1 FAMILY] [--r1-train-fraction FLOAT]
 ```
 
-The signer is a person's name. `auto`, `amt`, `system`, `orchestrator`, and `agent` are rejected. A report whose status is not `pass` is rejected, and the remediation is printed.
+Reports land in `gates/ready/<brief>/`, not in a separate gate directory. Noise passes when every baseline cell is present. With `min_effect: auto` the packet resolves the floor; an explicit `min_effect` below twice the R3 half-width is `revise`. The ladder passes when the good design ranks above the bad one in each checked family and Kendall tau-b between R1 and R3 is at least 0.6. A family the dataset cannot support is listed and the others are checked.
 
-G1 writes `gates/g1/<brief-name>/g1.json`. It hashes the noise report, the brief, the dataset spec tree, and the manifest file. The brief's metric name, `min_effect`, and `budget.total_dbu` must match the report, and `min_effect` must still clear twice the R3 half-width. The manifest path has to be a local file. A signature goes stale when any of those inputs change.
-
-G2 writes `gates/g2/<dataset>/<family-key>/g2.json`. Later runs on the same dataset and family set reuse it.
-
-G3 writes `gates/g3/g3.json`. It signs one passing calibration packet at `gates/g3/<brief-name>/calibration_report.json`, and only when `amt status --audit` is clean for that run id. G3 is once for the whole repo. It is not repeated for the next brief.
-
-### `gates`
+### `reproduce` and `stats`
 
 ```bash
-uv run amt gates --brief <brief>
-```
-
-A walking-skeleton brief prints `walking skeleton; G1 and G2 are not required` and exits `0`. A search brief prints one line:
-
-```text
-G1 current; G2 current; G3 missing; full budget not ready
-```
-
-`current` means the stored signature still matches its report and inputs. `full budget ready` means G3 is signed and `gates/small/<run-id>.json` contains a passing K=4 receipt. Exit `1` means `amt run` would escalate instead of starting the search.
-
-### `stats`
-
-```bash
+uv run amt reproduce --run-id ID --node <id>
 uv run amt stats --run-id ID
 ```
 
-Reads `runs/<id>/state.json`, writes `runs/<id>/agent_stats.json`, and prints it. Bug rate is debug attempts divided by implementer calls. Revisions count schema failures and critic `REVISE` cycles. Tokens and wall-clock are summed from `runs/<id>/agent_calls.jsonl`. Exit `1` means there is no state file.
+`reproduce` resubmits `train` for that ledger row and passes when the new metric lands inside the recorded interval. `stats` reads `runs/<id>/state.json`, writes `runs/<id>/agent_stats.json`, and prints it.
 
-## Files a run leaves behind
+## Files
 
 | Path | When |
 | --- | --- |
+| `gates/ready/<brief>/ready_report.json` | After `amt prep`. |
+| `gates/ready/<brief>/ready.json` | After `amt sign ready`. Commit this. |
+| `gates/ready/<brief>/manifest.json` | The manifest prep downloaded. Part of the signature. |
 | `runs/<id>/state.json` | After every stage. |
-| `runs/<id>/round_<n>.md` | After each round. Does not block the run. |
-| `runs/<id>/APPROVAL.md` | While `every_stage` or `round_shortlist` is waiting. |
-| `runs/<id>/ESCALATE.md` | Caps, budget refusal, a stop file, or a stale gate. |
-| `runs/<id>/report.md` | Stage `REPORT`, including calibration and the small run. |
-| `runs/<id>/agent_calls.jsonl` | One record per agent call, including `references_count` on planner calls. |
-| `runs/<id>/agent_stats.json` | On report, and again from `amt stats`. |
-| `runs/<id>/phase2_entry.md` | `amt run --scale full` after G3 and a passing small run. |
+| `runs/<id>/candidates/<node>/` | Implementer output. `c00` is the materialized LightGBM reference. |
+| `runs/<id>/round_<n>.md` | After each round. |
+| `runs/<id>/report.json` | Finished search. `outcome` is the scriptable field. |
+| `runs/<id>/report.md` | Human summary, including `Outcome:`. |
+| `runs/<id>/ESCALATE.md` | Budget, cluster, caps, a stop file, or a stale ready gate. |
+| `runs/<id>/APPROVAL.md` | While an approval mode is waiting. |
+| `runs/<id>/agent_calls.jsonl` | One record per agent call, including retry counts. |
+| `runs/dataset-repair/<spec>/<n>/` | Feature SQL before, after, and the unified diff. |
 | `ledger/results.jsonl` | Append-only. Written by the orchestrator and the pruner, not by agents. |
-| `gates/g1/`, `gates/g2/`, `gates/g3/`, `gates/small/` | Noise report, ladder report, calibration packet, signatures, small-run receipt. |
+
+`gates/ready/` is the git-tracked sign-off directory. Do not recreate `gates/g1/` or `gates/g2/`.
 
 ## Bundle jobs
 
@@ -227,9 +247,8 @@ Reads `runs/<id>/state.json`, writes `runs/<id>/agent_stats.json`, and prints it
 
 | Job key | Who submits it |
 | --- | --- |
-| `build_dataset` | `amt dataset build` |
-| `train` | `amt noise`, `amt ladder`, `amt run` (search rungs), `amt reproduce` |
+| `build_dataset` | `amt prep`, `amt dataset build`, `amt dataset preflight` |
+| `train` | `amt prep` (noise and ladder), `amt run`, `amt reproduce` |
 | `confirm` | `amt run`, after promotion. Holdouts need a one-time confirm token. |
 | `final_holdout` | `amt final` |
-| `hello_train` | `amt run` on a walking-skeleton brief only |
 | `pruner` | `databricks bundle run pruner` when you want to replay a file by hand |

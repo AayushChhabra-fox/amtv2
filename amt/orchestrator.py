@@ -687,6 +687,11 @@ def _search_submit(state: RunState, brief: Brief, root: Path, backend: object) -
             idempotency_token=token,
         )
         record.update({"job_run_id": job_run_id, "submitted_at": time.time(), "dbu_est": estimate})
+        # A debug or infra resubmit is a new attempt. The previous failure
+        # stays in failed_attempts and must not kill the new job at prune.
+        record.pop("failure_kind", None)
+        record.pop("traceback", None)
+        record.pop("result_state", None)
         state.submitted_jobs[key] = record
     node.status = "submitted"
     state.candidate_id = node.node_id
@@ -754,11 +759,15 @@ def _retry_infra_failure(
     attempts.append({"job_run_id": record.get("job_run_id"), "state_message": message})
     retries = int(record.get("infra_retries") or 0)
     if retries >= MAX_INFRA_RETRIES:
-        record.update(
-            {"pruned": True, "failed_attempts": attempts, "failure_kind": "infra_crash"}
-        )
-        state.submitted_jobs[key] = record
-        node.status = "failed"
+        # Leave the node ready and the stage at SUBMIT so `amt resume` can
+        # submit the same candidate again. The retry counter is cleared; a
+        # human resume is a new attempt, not an immediate second escalation.
+        state.submitted_jobs[key] = {
+            "failed_attempts": attempts,
+            "failure_kind": "infra_crash",
+        }
+        node.status = "ready"
+        state.stage = "SUBMIT"
         return _escalate(
             state,
             root,

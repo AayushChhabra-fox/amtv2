@@ -2,6 +2,8 @@
 
 Nov 12, 2026 · revision of "Automated Model Trainer: Architecture and Implementation"
 
+The operator sequence is now two commands, a signature, the search, and the final holdout: `amt prep`, `amt sign ready`, `amt run` / `amt resume`, and `amt final`. Follow [phase2_runbook.md](phase2_runbook.md) and [CLI.md](CLI.md). The gate names G1–G5 in the sections below are the original plan, not the current command flow. Sign-off state lives in `gates/ready/<brief>/`.
+
 ## 0. Summary
 
 The MVP takes one brief (a YAML file) and returns a short, verified list of ranked model candidates, each with confidence intervals, measured cost and an audit trail. It also returns a clean "no winner" report if nothing beats the baseline. The first target is the **News For You (NFY) article reranker**, scored by NDCG@10 on logged For You feed sessions.

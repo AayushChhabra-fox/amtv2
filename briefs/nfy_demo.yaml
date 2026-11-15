@@ -26,7 +26,12 @@ task:
     - item_index
     - display position
     - anything timestamped after request_ts
-min_effect: 0.026
+# Prep locks this from the round-0 floor. Do not edit the file to raise it.
+min_effect: auto
+constraints:
+  allow_gpu_serving: false
+  allow_external_weights: false
+  license_policy: commercial_only
 efficiency:
   train_dbu_per_candidate: 5
   serving:
@@ -35,11 +40,6 @@ budget:
   total_dbu: 40
   max_concurrent_jobs: 2
 mode: both
-design_space:
-  families:
-    - learned reweighting of production signals
-    - gradient-boosted rankers
-  data: existing sources only
 off_limits:
   - eval and holdout splits
   - metric code
