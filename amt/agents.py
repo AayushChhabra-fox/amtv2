@@ -450,7 +450,7 @@ def _run_cursor_once(
     )
     lease = None
     try:
-        if role in {"implementer", "reviewer"}:
+        if role in {"implementer", "reviewer", "dataset_fixer"}:
             lease = _write_lease(root, proc.pid, role, run_id, directory, spec)
         try:
             stdout, stderr = proc.communicate(timeout=timeout_s)

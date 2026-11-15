@@ -51,10 +51,7 @@ def build_context(
         f"  serve_time_inputs: {', '.join(brief.task.serve_time_inputs) or '(unset)'}",
         f"  forbidden: {', '.join(brief.task.forbidden) or '(none)'}",
         "",
-        "Write scope: none; reply only."
-        if role in {"planner", "critic"}
-        else f"Write scope: runs/{run_id or '<run_id>'}/candidates/<id>/ only.",
-        "Do not edit harness/, amt/, briefs/, datasets/, databricks.yml, or resources/.",
+        *_write_scope(role, brief, run_id),
         "",
         _ledger_block(root, brief, run_id),
     ]
@@ -256,6 +253,12 @@ def _default_inputs(
         paths.append(str(root / "harness" / "interface.py"))
         if node_id:
             paths.append(str(candidate_dir(root, run_id or "unknown", node_id) / "spec.md"))
+    elif role == "dataset_fixer":
+        spec_text = brief.resolved_dataset_spec()
+        if spec_text:
+            features = root / spec_text / "features"
+            if features.is_dir():
+                paths.extend(str(path) for path in sorted(features.glob("*.sql")))
     elif role == "reviewer" and node_id:
         candidate = candidate_dir(root, run_id or "unknown", node_id)
         paths.append(str(candidate / "spec.md"))
@@ -287,4 +290,27 @@ def _output_contract(role: str) -> str:
             "Write model.py implementing fit, score, save, and load. "
             "Stay inside runs/<run_id>/candidates/<id>/."
         )
+    if role == "dataset_fixer":
+        return (
+            "Fix the failing feature SQL. Return one JSON object with an edits list. "
+            "Each edit needs path (features/<name>.sql) and sql (the full file). "
+            "Keep the same output column aliases. Do not add forbidden columns or sources."
+        )
     return "Follow the role prompt."
+
+
+def _write_scope(role: str, brief: Brief, run_id: str | None) -> list[str]:
+    if role in {"planner", "critic"}:
+        scope = "Write scope: none; reply only."
+        banned = "Do not edit harness/, amt/, briefs/, datasets/, databricks.yml, or resources/."
+    elif role == "dataset_fixer":
+        spec = Path(brief.resolved_dataset_spec() or "").name or "<spec>"
+        scope = f"Write scope: datasets/{spec}/features/*.sql only."
+        banned = (
+            "Do not edit dataset.yaml, queries.sql, candidates.sql, labels.sql, "
+            "checks/, harness/, amt/, or any other spec."
+        )
+    else:
+        scope = f"Write scope: runs/{run_id or '<run_id>'}/candidates/<id>/ only."
+        banned = "Do not edit harness/, amt/, briefs/, datasets/, databricks.yml, or resources/."
+    return [scope, banned]

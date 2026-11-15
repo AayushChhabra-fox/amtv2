@@ -273,6 +273,117 @@ def test_ancestor_lease_limits_writes_when_env_is_missing(tmp_path: Path) -> Non
     assert blocked["permission"] == "deny"
 
 
+def test_dataset_fixer_may_write_only_its_feature_sql(tmp_path: Path) -> None:
+    env = {"AMT_ROLE": "dataset_fixer", "AMT_SPEC": "nfy_demo"}
+    allowed = "datasets/nfy_demo/features/profile.sql"
+    blocked = [
+        "datasets/nfy_demo/dataset.yaml",
+        "datasets/nfy_demo/queries.sql",
+        "datasets/nfy_demo/candidates.sql",
+        "datasets/nfy_demo/labels.sql",
+        "datasets/nfy_demo/checks/prod_ndcg.sql",
+        "datasets/nfy_demo/features/nested/profile.sql",
+        "datasets/other/features/profile.sql",
+        "datasets/nfy_demo/features/../../other/features/profile.sql",
+        "harness/train.py",
+    ]
+
+    def write(path: str) -> dict:
+        return _run(
+            tmp_path,
+            {
+                "hook_event_name": "preToolUse",
+                "tool_name": "Write",
+                "tool_input": {"path": path},
+                "workspace_roots": [str(tmp_path)],
+            },
+            env,
+        )
+
+    assert write(allowed)["permission"] == "allow"
+    for path in blocked:
+        assert write(path)["permission"] == "deny", path
+    missing_spec = _run(
+        tmp_path,
+        {
+            "hook_event_name": "preToolUse",
+            "tool_name": "Write",
+            "tool_input": {"path": allowed},
+            "workspace_roots": [str(tmp_path)],
+        },
+        {"AMT_ROLE": "dataset_fixer"},
+    )
+    assert missing_spec["permission"] == "deny"
+    shell_ok = _run(
+        tmp_path,
+        {
+            "hook_event_name": "beforeShellExecution",
+            "command": f"cp fixed.sql {allowed}",
+            "workspace_roots": [str(tmp_path)],
+        },
+        env,
+    )
+    shell_blocked = _run(
+        tmp_path,
+        {
+            "hook_event_name": "beforeShellExecution",
+            "command": "cp fixed.sql datasets/nfy_demo/dataset.yaml",
+            "workspace_roots": [str(tmp_path)],
+        },
+        env,
+    )
+    read_ok = _run(
+        tmp_path,
+        {
+            "hook_event_name": "beforeShellExecution",
+            "command": "cat datasets/nfy_demo/queries.sql",
+            "workspace_roots": [str(tmp_path)],
+        },
+        env,
+    )
+    assert shell_ok["permission"] == "allow"
+    assert shell_blocked["permission"] == "deny"
+    assert read_ok["permission"] == "allow"
+
+
+def test_dataset_fixer_lease_limits_writes_when_env_is_missing(tmp_path: Path) -> None:
+    lease = tmp_path / ".cursor" / "hooks" / "state" / "leases" / f"{os.getpid()}.json"
+    lease.parent.mkdir(parents=True)
+    lease.write_text(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "role": "dataset_fixer",
+                "run_id": "dataset-repair-nfy_demo",
+                "candidate_dir": "",
+                "spec": "nfy_demo",
+                "ts": time.time(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    ok = _run(
+        tmp_path,
+        {
+            "hook_event_name": "preToolUse",
+            "tool_name": "Write",
+            "tool_input": {"path": "datasets/nfy_demo/features/article.sql"},
+            "workspace_roots": [str(tmp_path)],
+        },
+    )
+    blocked = _run(
+        tmp_path,
+        {
+            "hook_event_name": "preToolUse",
+            "tool_name": "Write",
+            "tool_input": {"path": "datasets/nfy_demo/labels.sql"},
+            "workspace_roots": [str(tmp_path)],
+        },
+    )
+    assert ok["permission"] == "allow"
+    assert blocked["permission"] == "deny"
+
+
 def test_dead_ancestor_lease_does_not_lock(tmp_path: Path) -> None:
     lease = tmp_path / ".cursor" / "hooks" / "state" / "leases" / f"{os.getpid()}.json"
     lease.parent.mkdir(parents=True)

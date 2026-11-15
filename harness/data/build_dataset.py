@@ -10,8 +10,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sqlite3
 import sys
+import traceback
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -69,6 +71,7 @@ from harness.data.contract import (  # noqa: E402
     load_spec,
     split_summary,
 )
+from harness.data.preflight import explain_issues, slice_bounds  # noqa: E402
 from harness.data.sampling import (  # noqa: E402
     choose_query_ids,
     query_ids_hash,
@@ -76,6 +79,8 @@ from harness.data.sampling import (  # noqa: E402
     sample_rules,
 )
 from harness.interface import RankingFrame  # noqa: E402
+
+_FRAG = re.compile(r"amt_frag_([A-Za-z_][A-Za-z0-9_]*)")
 
 
 def project_root() -> Path:
@@ -139,6 +144,20 @@ class SparkExecutor:
     def write_table(self, table: str, select_sql: str) -> None:
         self.spark.sql(f"CREATE OR REPLACE TABLE {table} AS {select_sql}")
 
+    def explain(self, sql: str) -> str:
+        frame = self.spark.sql(f"EXPLAIN FORMATTED {sql}")
+        parts: list[str] = []
+        for row in frame.collect():
+            if hasattr(row, "asDict"):
+                data = row.asDict(recursive=True)
+                if len(data) == 1:
+                    parts.append(str(next(iter(data.values()))))
+                else:
+                    parts.append(str(data))
+            else:
+                parts.append(str(row))
+        return "\n".join(parts)
+
     def write_parquet(self, table: str, path: str) -> None:
         """Copy a Delta split to a volume Parquet file when the session can."""
 
@@ -179,6 +198,9 @@ def _prepare_sources(
     for view, select_sql in source_view_sql(spec, start, end):
         if view in keep:
             continue
+        spark = getattr(executor, "spark", None)
+        if spark is not None:
+            _mark(spark, f"source:{view.removeprefix('amt_src_')}")
         executor.replace_view(view, select_sql)
 
 
@@ -388,7 +410,125 @@ def _spark_summary_inputs(executor: SparkExecutor, table: str) -> dict[str, Any]
     return {"counts": counts, "days": {row["event_day"]: int(row["n"]) for row in day_rows}}
 
 
+def failure_dir(catalog: str, schema: str, spec_name: str, spec_hash: str) -> Path:
+    """``<volume>/dataset_builds/<spec>/<spec_hash>`` for ``failure.json``.
+
+    ``AMT_DATASET_FAILURE_ROOT`` redirects the write in tests. The cluster job
+    leaves it unset and writes under the artifact volume.
+    """
+
+    override = os.environ.get("AMT_DATASET_FAILURE_ROOT", "").strip()
+    if override:
+        base = Path(override)
+    else:
+        base = Path(f"/Volumes/{catalog}/{schema}/amt_artifacts")
+    return base / "dataset_builds" / spec_name / spec_hash
+
+
+def _mark(spark, name: str) -> None:
+    setattr(spark, "_amt_fragment", name)
+
+
+def _fragment_name(spark) -> str:
+    return str(getattr(spark, "_amt_fragment", "") or "")
+
+
+def _fragment_in_sql(sql: str) -> str:
+    found = _FRAG.findall(sql)
+    return found[-1] if found else ""
+
+
+def _fragment_path(spec: DatasetSpec, name: str) -> str:
+    if name == "queries":
+        return spec.queries
+    if name == "candidates":
+        return spec.candidates
+    if name == "labels":
+        return spec.labels.sql
+    group = spec.feature_groups.get(name)
+    if group is not None:
+        return group.sql
+    return ""
+
+
+def _source_schemas(spark, spec: DatasetSpec) -> dict[str, str]:
+    schemas: dict[str, str] = {}
+    table = getattr(spark, "table", None)
+    if not callable(table):
+        return schemas
+    for name, source in spec.sources.items():
+        try:
+            frame = table(source.table)
+            schema = getattr(frame, "schema", None)
+            simple = getattr(schema, "simpleString", None)
+            schemas[name] = simple() if callable(simple) else ""
+        except Exception as exc:
+            schemas[name] = f"{type(exc).__name__}: {exc}"
+    return schemas
+
+
+def _traceback_tail(exc: BaseException) -> str:
+    lines = traceback.format_exception(type(exc), exc, exc.__traceback__)
+    return "\n".join("".join(lines).splitlines()[-40:])
+
+
+def _write_failure(spec: DatasetSpec, spark, catalog: str, schema: str, exc: BaseException) -> None:
+    """Best-effort ``failure.json``. A write error must not hide ``exc``."""
+
+    fragment = _fragment_name(spark)
+    payload = {
+        "exception_type": type(exc).__name__,
+        "message": str(exc),
+        "traceback": _traceback_tail(exc),
+        "kind": str(getattr(exc, "kind", "") or ""),
+        "examples": list(getattr(exc, "examples", None) or []),
+        "fragment": fragment,
+        "fragment_path": _fragment_path(spec, fragment),
+        "source_schemas": _source_schemas(spark, spec),
+        "spec": spec.name,
+        "spec_hash": spec.spec_hash(),
+    }
+    try:
+        directory = failure_dir(catalog, schema, spec.name, spec.spec_hash())
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "failure.json").write_text(
+            json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n",
+            encoding="utf-8",
+        )
+    except Exception:
+        return
+
+
+def _preflight_violation(kind: str, sql: str) -> bool:
+    if kind == "point_in_time":
+        return True
+    return kind == "contract" and "HAVING COUNT" in sql.upper()
+
+
 def build_spark(
+    spec: DatasetSpec,
+    spark,
+    *,
+    catalog: str,
+    schema: str,
+    output_dir: Path,
+    skip_checks: bool = False,
+) -> dict:
+    try:
+        return _build_spark_impl(
+            spec,
+            spark,
+            catalog=catalog,
+            schema=schema,
+            output_dir=output_dir,
+            skip_checks=skip_checks,
+        )
+    except Exception as exc:
+        _write_failure(spec, spark, catalog, schema, exc)
+        raise
+
+
+def _build_spark_impl(
     spec: DatasetSpec,
     spark,
     *,
@@ -407,6 +547,7 @@ def build_spark(
     for name, source in spec.sources.items():
         if not source.materialize:
             continue
+        _mark(spark, f"source:{name}")
         view = f"amt_src_{name}"
         table = _stage(executor, catalog, schema, spec, f"src_{name}", f"SELECT * FROM {view}")
         staged.append(table)
@@ -416,6 +557,7 @@ def build_spark(
         spec, render_params(spec, span_start, span_end, _full_window(spec))
     )
     for name, sql in fragments:
+        _mark(spark, name)
         view = f"amt_frag_{name}"
         executor.replace_view(view, sql)
         for column in executor.columns(view):
@@ -429,21 +571,25 @@ def build_spark(
     # Temp views are recomputed from the sources on every query, so each
     # fragment is materialized once and every later query reads the copy.
     for name, _sql in fragments:
+        _mark(spark, name)
         view = f"amt_frag_{name}"
         table = _stage(executor, catalog, schema, spec, name, f"SELECT * FROM {view}")
         staged.append(table)
         executor.replace_view(view, f"SELECT * FROM {table}")
         column_sets[name] = executor.columns(view)
     for kind, sql in violation_sqls(spec, column_sets):
+        _mark(spark, _fragment_in_sql(sql) or kind)
         examples = executor.execute(sql)
         if examples:
             raise DatasetBuildError(kind, "contract violation", examples)
+    _mark(spark, "assembled")
     assembled = _stage(
         executor, catalog, schema, spec, "assembled", assemble_select_sql(spec, column_sets)
     )
     staged.append(assembled)
     assembled_sql = f"SELECT * FROM {assembled}"
     for split_name, start, end in spec.split_windows():
+        _mark(spark, split_name)
         bounds = candidate_bounds_sql(spec, assembled_sql, start, end)
         if bounds:
             examples = executor.execute(bounds)
@@ -511,6 +657,7 @@ def build_spark(
     for check in spec.checks:
         if not check.expected or not check.split:
             continue
+        _mark(spark, "check")
         start, end = ranges[check.split]
         _prepare_sources(executor, spec, start, end, keep=frozenset(kept_sources))
         params = render_params(spec, start, end, windows[check.split])
@@ -523,6 +670,7 @@ def build_spark(
     for check in spec.checks:
         if not check.metric or not check.split or not check.score:
             continue
+        _mark(spark, "check")
         frame = RankingFrame(rows_for_metrics.get(check.split, []))
         measured[check.name] = metric_value(check.metric, frame, score_array(frame, check.score))
 
@@ -579,6 +727,134 @@ def build_spark(
     return manifest
 
 
+def preflight_spark(
+    spec: DatasetSpec,
+    spark,
+    *,
+    catalog: str,
+    schema: str,
+    output_dir: Path,
+    slice_window: str = "1h",
+    positive_grades: list[int] | None = None,
+) -> dict:
+    """Explain every fragment, materialize one slice of ``search_val``, and check it.
+
+    The slice is staged and then dropped. Split Delta tables are not written.
+    """
+
+    try:
+        return _preflight_spark_impl(
+            spec,
+            spark,
+            catalog=catalog,
+            schema=schema,
+            output_dir=output_dir,
+            slice_window=slice_window,
+            positive_grades=positive_grades or [],
+        )
+    except Exception as exc:
+        _write_failure(spec, spark, catalog, schema, exc)
+        raise
+
+
+def _preflight_spark_impl(
+    spec: DatasetSpec,
+    spark,
+    *,
+    catalog: str,
+    schema: str,
+    output_dir: Path,
+    slice_window: str,
+    positive_grades: list[int],
+) -> dict:
+    executor = SparkExecutor(spark)
+    start, stop = slice_bounds(spec, slice_window)
+    staged: list[str] = []
+    try:
+        _prepare_sources(executor, spec, start.date(), stop.date())
+        params = render_params(spec, start.date(), stop.date(), (start, stop))
+        fragments = fragment_selects(spec, params)
+        for name, sql in fragments:
+            _mark(spark, name)
+            issues = explain_issues(executor.explain(sql), spec)
+            if issues:
+                raise DatasetBuildError(
+                    "explain",
+                    f"{name} explain flagged an unsafe join or scan",
+                    issues,
+                )
+        column_sets: dict[str, list[str]] = {}
+        for name, sql in fragments:
+            _mark(spark, name)
+            view = f"amt_frag_{name}"
+            executor.replace_view(view, sql)
+            table = _stage(
+                executor,
+                catalog,
+                schema,
+                spec,
+                f"preflight_{name}",
+                f"SELECT * FROM {view}",
+            )
+            staged.append(table)
+            executor.replace_view(view, f"SELECT * FROM {table}")
+            column_sets[name] = executor.columns(view)
+            for column in column_sets[name]:
+                pattern = forbidden_hit(column, spec.forbidden_columns)
+                if pattern is not None:
+                    raise DatasetBuildError(
+                        "forbidden_column",
+                        f"{name} contains forbidden column {column}",
+                        [{"column": column, "pattern": pattern, "fragment": name}],
+                    )
+        for kind, sql in violation_sqls(spec, column_sets):
+            if not _preflight_violation(kind, sql):
+                continue
+            _mark(spark, _fragment_in_sql(sql) or kind)
+            examples = executor.execute(sql)
+            if examples:
+                raise DatasetBuildError(kind, "contract violation", examples)
+        if positive_grades:
+            _mark(spark, "labels")
+            rows = executor.execute(
+                "SELECT CAST(label AS INT) AS label, COUNT(*) AS n "
+                "FROM amt_frag_labels GROUP BY CAST(label AS INT)"
+            )
+            found = {
+                int(row["label"]): int(row["n"])
+                for row in rows
+                if row.get("label") is not None
+            }
+            missing = [grade for grade in positive_grades if found.get(grade, 0) <= 0]
+            if missing:
+                raise DatasetBuildError(
+                    "label_support",
+                    "positive label grades have no rows in the preflight slice",
+                    [{"grade": grade, "rows": found.get(grade, 0)} for grade in missing],
+                )
+        report = {
+            "dataset": spec.name,
+            "spec_hash": spec.spec_hash(),
+            "preflight_slice": slice_window,
+            "slice_start": start.isoformat(sep=" "),
+            "slice_end": stop.isoformat(sep=" "),
+            "positive_grades": list(positive_grades),
+            "status": "pass",
+        }
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "preflight.json").write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return report
+    finally:
+        for table in staged:
+            try:
+                executor.drop_table(table)
+            except Exception:
+                pass
+
+
 def build(
     spec_path: str | Path,
     *,
@@ -589,11 +865,26 @@ def build(
     catalog: str | None = None,
     schema: str | None = None,
     skip_checks: bool = False,
+    preflight_slice: str = "",
+    positive_grades: list[int] | None = None,
 ) -> dict:
     spec = load_spec(resolve_spec(spec_path))
     if spec.task_type != "ranking":
         raise DatasetBuildError("contract", f"unsupported task_type {spec.task_type}")
     destination = Path(output_dir)
+    if preflight_slice:
+        if backend != "spark":
+            raise DatasetBuildError("contract", "preflight-slice needs --backend spark")
+        session = spark or _active_spark()
+        return preflight_spark(
+            spec,
+            session,
+            catalog=catalog or spec.output.catalog,
+            schema=schema or spec.output.schema_name,
+            output_dir=destination,
+            slice_window=preflight_slice,
+            positive_grades=positive_grades,
+        )
     if backend == "local":
         if connection is None:
             raise DatasetBuildError("contract", "local backend needs a sqlite connection")
@@ -631,6 +922,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--schema", default="")
     parser.add_argument("--sqlite", default="")
     parser.add_argument("--skip-checks", action="store_true")
+    parser.add_argument("--preflight-slice", default="")
+    parser.add_argument(
+        "--positive-grades",
+        default="",
+        help="comma-separated positive label grades that must have rows in the slice",
+    )
     parser.add_argument("--root", default="")
     args = parser.parse_args(argv)
     if args.root:
@@ -642,6 +939,7 @@ def main(argv: list[str] | None = None) -> None:
     schema = args.schema or spec.output.schema_name
     output = args.output_dir or str(Path(f"/Volumes/{catalog}/{schema}/amt_artifacts") / spec.name)
     connection = sqlite3.connect(args.sqlite) if args.sqlite else None
+    grades = [int(part) for part in args.positive_grades.split(",") if part.strip()]
     manifest = build(
         spec.root or args.spec,
         output_dir=output,
@@ -650,6 +948,8 @@ def main(argv: list[str] | None = None) -> None:
         catalog=catalog,
         schema=schema,
         skip_checks=args.skip_checks,
+        preflight_slice=args.preflight_slice,
+        positive_grades=grades,
     )
     print(json.dumps({"dataset": manifest["dataset"], "spec_hash": manifest["spec_hash"]}))
 

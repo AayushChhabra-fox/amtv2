@@ -141,5 +141,6 @@ INTERNAL_ENV = frozenset(
         "AMT_BUILD_DATASET_JOB_ID",
         "AMT_REQUIRE_BASELINES",
         "AMT_LIVE_DATABRICKS",
+        "AMT_DATASET_FAILURE_ROOT",
     }
 )

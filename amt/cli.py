@@ -15,6 +15,8 @@ from amt.batch import (
     submit_noise,
     wait_job,
 )
+from amt.dataset_preflight import run_preflight
+from amt.dataset_repair import DatasetRepairError, repair_features, revert_spec
 from amt.deploy import DeployError, deploy
 from amt.doctor import report as doctor_report
 from amt.envutil import load_env
@@ -120,8 +122,30 @@ def main(argv: list[str] | None = None) -> int:
     dataset_sub = dataset_parser.add_subparsers(dest="dataset_command", required=True)
     build_parser = dataset_sub.add_parser("build", help="submit the dataset build job")
     build_parser.add_argument("--spec", required=True)
+    build_parser.add_argument("--brief", type=Path, default=None)
     build_parser.add_argument("--wait", action="store_true")
+    build_parser.add_argument(
+        "--preflight",
+        action="store_true",
+        help="run the 90s slice before the full build",
+    )
+    build_parser.add_argument(
+        "--repair",
+        action="store_true",
+        help="repair features/*.sql and re-run the slice before the full build",
+    )
     build_parser.add_argument("--root", type=Path, default=None)
+    preflight_parser = dataset_sub.add_parser("preflight", help="run the 90s dataset preflight")
+    preflight_parser.add_argument("--spec", required=True)
+    preflight_parser.add_argument("--brief", type=Path, default=None)
+    preflight_parser.add_argument("--repair", action="store_true")
+    preflight_parser.add_argument("--local-only", action="store_true")
+    preflight_parser.add_argument("--root", type=Path, default=None)
+    revert_parser = dataset_sub.add_parser(
+        "revert", help="restore feature SQL from a repair snapshot"
+    )
+    revert_parser.add_argument("--spec", required=True)
+    revert_parser.add_argument("--root", type=Path, default=None)
 
     final_parser = sub.add_parser("final", help="open the final holdout once")
     final_parser.add_argument("--run-id", required=True)
@@ -154,13 +178,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"deployed {path}")
         return 0
     if args.command == "dataset":
-        run_id = submit_dataset(root, args.spec)
-        print(run_id)
-        if args.wait:
-            result = wait_job(root, run_id)
-            print(result.get("result_state"))
-            return 0 if result.get("result_state") == "SUCCESS" else 1
-        return 0
+        return _dataset_command(root, args)
     if args.command == "final":
         try:
             path = open_final(root, args.run_id, args.signer)
@@ -219,6 +237,72 @@ def main(argv: list[str] | None = None) -> int:
     stop_path.parent.mkdir(parents=True, exist_ok=True)
     stop_path.write_text("stop\n")
     print(f"wrote {stop_path}")
+    return 0
+
+
+def _load_optional_brief(root: Path, path: Path | None):
+    if path is None:
+        return None
+    return load_brief(_under_root(root, path))
+
+
+def _dataset_command(root: Path, args: argparse.Namespace) -> int:
+    if args.dataset_command == "revert":
+        try:
+            path = revert_spec(root, args.spec)
+        except DatasetRepairError as exc:
+            print(str(exc))
+            return 1
+        print(path)
+        return 0
+    if args.dataset_command == "preflight":
+        return _dataset_preflight(root, args)
+    try:
+        brief = _load_optional_brief(root, args.brief)
+    except (OSError, ValueError) as exc:
+        print(str(exc))
+        return 1
+    if args.repair:
+        try:
+            outcome = repair_features(root, args.spec, brief)
+        except DatasetRepairError as exc:
+            print(json.dumps(exc.failure, default=str))
+            return 1
+        print(json.dumps({"preflight": "pass", "fixes": outcome["fixes"]}))
+    elif args.preflight:
+        outcome = run_preflight(root, args.spec, brief)
+        if outcome["status"] != "pass":
+            print(json.dumps(outcome.get("failure") or {}, default=str))
+            return 1
+        print(json.dumps({"preflight": "pass"}))
+    run_id = submit_dataset(root, args.spec)
+    print(run_id)
+    if args.wait:
+        result = wait_job(root, run_id)
+        print(result.get("result_state"))
+        return 0 if result.get("result_state") == "SUCCESS" else 1
+    return 0
+
+
+def _dataset_preflight(root: Path, args: argparse.Namespace) -> int:
+    try:
+        brief = _load_optional_brief(root, args.brief)
+    except (OSError, ValueError) as exc:
+        print(str(exc))
+        return 1
+    try:
+        if args.repair:
+            outcome = repair_features(root, args.spec, brief, remote=not args.local_only)
+        else:
+            outcome = run_preflight(root, args.spec, brief, remote=not args.local_only)
+    except DatasetRepairError as exc:
+        print(json.dumps(exc.failure, default=str))
+        return 1
+    if outcome["status"] != "pass":
+        print(json.dumps(outcome.get("failure") or {}, default=str))
+        return 1
+    shown = {key: value for key, value in outcome.items() if key != "failure"}
+    print(json.dumps(shown, default=str))
     return 0
 
 

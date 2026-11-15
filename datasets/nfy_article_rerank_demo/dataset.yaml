@@ -16,6 +16,11 @@ task_type: ranking
 entity_type: article
 primary_metric: ndcg@10_graded
 
+# One-hour shadow window. Day-blocked bootstrap needs five search_val days;
+# this demo opts out because it never feeds the noise gate.
+preflight:
+  min_search_val_days: 1
+
 output:
   catalog: product_api_dev
   schema: amt

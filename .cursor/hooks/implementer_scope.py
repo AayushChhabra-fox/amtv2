@@ -20,10 +20,18 @@ hook applies a lease only when that pid is an ancestor of the hook process
 and `os.kill(pid, 0)` succeeds. Other terminals are not descendants, so they
 stay unrestricted.
 
-Allowed writes are `runs/<run_id>/candidates/<node_id>/...`. When
-AMT_CANDIDATE_DIR or a matching lease names a directory, the write must sit
-under that exact prefix. Those roles cannot write `harness/`, `amt/`,
-`briefs/`, `datasets/`, `resources/`, or `databricks.yml`.
+Allowed writes for implementer and reviewer are
+`runs/<run_id>/candidates/<node_id>/...`. When AMT_CANDIDATE_DIR or a matching
+lease names a directory, the write must sit under that exact prefix. Those
+roles cannot write `harness/`, `amt/`, `briefs/`, `datasets/`, `resources/`,
+or `databricks.yml`.
+
+`dataset_fixer` is a separate role. `datasets/` is protected, so both
+decide_file_write and decide_shell handle that role before is_protected.
+With AMT_SPEC set, the only allowed write is
+`datasets/<AMT_SPEC>/features/<file>.sql` (no `..`, no nested directory).
+`dataset.yaml`, `queries.sql`, `candidates.sql`, `labels.sql`, `checks/`,
+and every other spec stay denied.
 
 Python 3.9 compatible: the hook runs with the system interpreter.
 """
@@ -41,6 +49,7 @@ from pathlib import Path
 PROTECTED_PREFIXES = ("harness/", "amt/", "briefs/", "datasets/", "resources/")
 PROTECTED_FILES = {"databricks.yml"}
 RESTRICTED_ROLES = {"implementer", "reviewer"}
+DATASET_FIXER = "dataset_fixer"
 STATE_NAME = "active_implementers.json"
 LEASE_TTL_S = 2 * 60 * 60
 
@@ -158,6 +167,7 @@ def load_state():
             "pid": int(value["pid"]),
             "ts": float(value["ts"]),
             "role": str(value.get("role") or ""),
+            "spec": str(value.get("spec") or ""),
         }
     canonical = {"agents": kept}
     if payload != canonical:
@@ -175,28 +185,71 @@ def _env_role():
     return os.environ.get("AMT_ROLE", "").strip()
 
 
-def implementer_active(event):
+def _explicit_role(event):
     role = _env_role()
     if role:
-        return role in RESTRICTED_ROLES
+        return role
     lease = _ancestor_lease()
-    if lease and str(lease.get("role") or "") in RESTRICTED_ROLES:
-        return True
-    subagent_type = str(event.get("subagent_type") or "")
-    if subagent_type in RESTRICTED_ROLES:
-        return True
-    return bool(load_state())
+    if lease and str(lease.get("role") or ""):
+        return str(lease.get("role") or "")
+    return str(event.get("subagent_type") or "")
+
+
+def _state_has_role(role):
+    for item in load_state().values():
+        recorded = str(item.get("role") or "implementer")
+        if recorded == role:
+            return True
+    return False
+
+
+def implementer_active(event):
+    role = _explicit_role(event)
+    if role:
+        return role in RESTRICTED_ROLES
+    for item in load_state().values():
+        recorded = str(item.get("role") or "implementer")
+        if recorded in RESTRICTED_ROLES:
+            return True
+    return False
+
+
+def dataset_fixer_active(event):
+    role = _explicit_role(event)
+    if role:
+        return role == DATASET_FIXER
+    if any(_state_has_role(name) for name in RESTRICTED_ROLES):
+        return False
+    return _state_has_role(DATASET_FIXER)
+
+
+def dataset_fixer_spec(event):
+    if _env_role() == DATASET_FIXER:
+        return os.environ.get("AMT_SPEC", "").strip()
+    if _env_role():
+        return ""
+    lease = _ancestor_lease()
+    if lease and str(lease.get("role") or "") == DATASET_FIXER:
+        return str(lease.get("spec") or "").strip()
+    if str(event.get("subagent_type") or "") == DATASET_FIXER:
+        return os.environ.get("AMT_SPEC", "").strip()
+    for item in load_state().values():
+        if str(item.get("role") or "") == DATASET_FIXER:
+            return str(item.get("spec") or "").strip()
+    return ""
 
 
 def _restricted_role(event):
     subagent_type = str(event.get("subagent_type") or "")
     task = str(event.get("task") or "")
-    if subagent_type in RESTRICTED_ROLES:
+    if subagent_type in RESTRICTED_ROLES or subagent_type == DATASET_FIXER:
         return subagent_type
     if task.startswith("implementer:"):
         return "implementer"
     if task.startswith("reviewer:"):
         return "reviewer"
+    if task.startswith("dataset_fixer:"):
+        return DATASET_FIXER
     return ""
 
 
@@ -206,7 +259,12 @@ def mark_start(event):
         return
     agents = load_state()
     subagent_id = str(event.get("subagent_id") or role)
-    agents[subagent_id] = {"pid": os.getppid(), "ts": time.time(), "role": role}
+    agents[subagent_id] = {
+        "pid": os.getppid(),
+        "ts": time.time(),
+        "role": role,
+        "spec": os.environ.get("AMT_SPEC", "").strip(),
+    }
     save_state({"agents": agents})
 
 
@@ -311,7 +369,46 @@ def is_protected(rel):
     return name.startswith(PROTECTED_PREFIXES)
 
 
+def dataset_fixer_path_ok(rel, spec):
+    """True only for `datasets/<spec>/features/<file>.sql`."""
+
+    if not spec:
+        return False
+    parts = [part for part in rel.split("/") if part not in ("", ".")]
+    if ".." in parts or len(parts) != 4:
+        return False
+    if parts[0] != "datasets" or parts[1] != spec or parts[2] != "features":
+        return False
+    name = parts[3]
+    if "/" in name or name.startswith(".") or not name.endswith(".sql"):
+        return False
+    return True
+
+
+def _decide_dataset_fixer_paths(event, paths):
+    spec = dataset_fixer_spec(event)
+    if not spec:
+        return deny("dataset_fixer needs AMT_SPEC and may only write features/*.sql.")
+    if not paths:
+        return deny("dataset_fixer write had no path.")
+    root_list = roots_from(event)
+    for raw in paths:
+        rel = relative_path(str(raw).strip("\"'"), root_list)
+        if not dataset_fixer_path_ok(rel, spec):
+            return deny(
+                "dataset_fixer may only write datasets/"
+                + spec
+                + "/features/*.sql. Blocked: "
+                + rel
+            )
+    return allow()
+
+
 def decide_file_write(event):
+    # dataset_fixer is decided before is_protected. datasets/ is protected, and
+    # this role's allow-list is the only exception.
+    if dataset_fixer_active(event):
+        return _decide_dataset_fixer_paths(event, write_paths(event))
     if not implementer_active(event):
         return allow()
     paths = write_paths(event)
@@ -328,16 +425,28 @@ def decide_file_write(event):
     return allow()
 
 
-def decide_shell(event):
-    if not implementer_active(event):
-        return allow()
-    command = str(event.get("command") or "")
+def _shell_targets(command):
     targets = re.findall(r">>?\s*([^\s;|&]+)", command)
     copy = re.search(r"\b(cp|mv|tee|install)\b(.*)$", command)
     if copy:
         tokens = copy.group(2).split()
         if tokens:
             targets.append(tokens[-1])
+    return targets
+
+
+def decide_shell(event):
+    command = str(event.get("command") or "")
+    # Same allow-list as file writes, still before is_protected.
+    if dataset_fixer_active(event):
+        targets = _shell_targets(command)
+        write_markers = (">", "tee ", "cp ", "mv ", "install ", "sed -i")
+        if not targets and not any(marker in command for marker in write_markers):
+            return allow()
+        return _decide_dataset_fixer_paths(event, targets)
+    if not implementer_active(event):
+        return allow()
+    targets = _shell_targets(command)
     write_markers = (">", "tee ", "cp ", "mv ", "install ", "sed -i")
     if not targets and not any(marker in command for marker in write_markers):
         return allow()

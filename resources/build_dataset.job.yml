@@ -16,6 +16,10 @@ resources:
           default: ${var.schema}
         - name: output_dir
           default: ""
+        - name: preflight_slice
+          default: ""
+        - name: positive_grades
+          default: ""
       tasks:
         - task_key: build_dataset
           new_cluster:
@@ -61,3 +65,7 @@ resources:
               - "{{job.parameters.schema}}"
               - --output-dir
               - "{{job.parameters.output_dir}}"
+              - --preflight-slice
+              - "{{job.parameters.preflight_slice}}"
+              - --positive-grades
+              - "{{job.parameters.positive_grades}}"

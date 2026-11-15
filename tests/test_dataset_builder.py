@@ -713,3 +713,126 @@ def test_dab_jobs_wire_builder_train_confirm_pruner() -> None:
     assert pruner_job["tasks"][0]["spark_python_task"]["python_file"].endswith("amt/pruner.py")
     assert train_job["tasks"][0]["new_cluster"]["num_workers"] == 0
     assert build_job["tasks"][0]["new_cluster"]["node_type_id"] == "${var.cpu_node_type_id}"
+    build_argv = build_job["tasks"][0]["spark_python_task"]["parameters"]
+    assert "--preflight-slice" in build_argv
+    assert "{{job.parameters.preflight_slice}}" in build_argv
+    assert "--positive-grades" in build_argv
+
+
+class _Schema:
+    def simpleString(self) -> str:
+        return "struct<event_date:date,request_id:string>"
+
+
+def test_spark_failure_writes_failure_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from harness.data.build_dataset import build_spark, failure_dir
+
+    monkeypatch.setenv("AMT_DATASET_FAILURE_ROOT", str(tmp_path / "volume"))
+    spec = load_spec(ROOT / "datasets" / "nfy_article_rerank_demo").model_copy(
+        update={"checks": []}
+    )
+
+    class _Spark(_RecordingSpark):
+        def sql(self, text: str) -> _Result:
+            self.statements.append(text)
+            if "amt_frag_profile" in text:
+                raise RuntimeError("AnalysisException: cannot resolve `missing_col`")
+            return super().sql(text)
+
+        def table(self, _name: str) -> _Frame:
+            frame = _Frame()
+            frame.schema = _Schema()
+            return frame
+
+    with pytest.raises(RuntimeError, match="cannot resolve"):
+        build_spark(spec, _Spark(), catalog="cat", schema="sch", output_dir=tmp_path / "out")
+    path = failure_dir("cat", "sch", spec.name, spec.spec_hash()) / "failure.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["exception_type"] == "RuntimeError"
+    assert "cannot resolve" in payload["message"]
+    assert payload["fragment"] == "profile"
+    assert payload["fragment_path"] == "features/profile.sql"
+    assert payload["traceback"]
+    assert payload["source_schemas"]["requests"] == "struct<event_date:date,request_id:string>"
+
+
+def test_preflight_slice_explains_and_checks_label_support(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from harness.data.build_dataset import preflight_spark
+
+    monkeypatch.setenv("AMT_DATASET_FAILURE_ROOT", str(tmp_path / "volume"))
+    spec = load_spec(ROOT / "datasets" / "nfy_article_rerank_demo").model_copy(
+        update={"checks": []}
+    )
+
+    class _Spark(_RecordingSpark):
+        def __init__(self, plan: str, labels: list[dict]) -> None:
+            super().__init__()
+            self.plan = plan
+            self.labels = labels
+
+        def sql(self, text: str) -> _Result:
+            self.statements.append(text)
+            if text.startswith("EXPLAIN"):
+                return _Result([{"plan": self.plan}])
+            if "FROM amt_frag_labels GROUP BY" in text:
+                return _Result(self.labels)
+            return super().sql(text)
+
+        def table(self, _name: str) -> _Frame:
+            frame = _Frame()
+            frame.schema = _Schema()
+            return frame
+
+    safe = "== Physical Plan ==\n*(1) Project\n"
+    spark = _Spark(safe, [{"label": 1, "n": 4}, {"label": 2, "n": 2}, {"label": 3, "n": 1}])
+    report = preflight_spark(
+        spec,
+        spark,
+        catalog="cat",
+        schema="sch",
+        output_dir=tmp_path / "ok",
+        slice_window="1h",
+        positive_grades=[1, 2, 3],
+    )
+    assert report["status"] == "pass"
+    assert any(text.startswith("EXPLAIN FORMATTED") for text in spark.statements)
+    written = json.loads((tmp_path / "ok" / "preflight.json").read_text(encoding="utf-8"))
+    assert written["preflight_slice"] == "1h"
+    assert written["positive_grades"] == [1, 2, 3]
+
+    cartesian = "AdaptiveSparkPlan\n+- CartesianProduct\n"
+    with pytest.raises(DatasetBuildError) as bad_plan:
+        preflight_spark(
+            spec,
+            _Spark(cartesian, []),
+            catalog="cat",
+            schema="sch",
+            output_dir=tmp_path / "cartesian",
+            positive_grades=[1],
+        )
+    assert bad_plan.value.kind == "explain"
+    failure = json.loads(
+        (
+            tmp_path
+            / "volume"
+            / "dataset_builds"
+            / spec.name
+            / spec.spec_hash()
+            / "failure.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert failure["kind"] == "explain"
+    assert failure["fragment"] == "queries"
+
+    with pytest.raises(DatasetBuildError) as missing:
+        preflight_spark(
+            spec,
+            _Spark(safe, [{"label": 1, "n": 4}]),
+            catalog="cat",
+            schema="sch",
+            output_dir=tmp_path / "labels",
+            positive_grades=[1, 2, 3],
+        )
+    assert missing.value.kind == "label_support"

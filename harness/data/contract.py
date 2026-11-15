@@ -259,6 +259,18 @@ class OutputSpec(BaseModel):
     schema_name: str = Field(default="amt", alias="schema")
 
 
+class PreflightSpec(BaseModel):
+    """Local dataset preflight. Day-blocked bootstrap needs five ``search_val`` days.
+
+    A demo spec that is not scored with that bootstrap sets ``min_search_val_days``
+    lower. That is the explicit override; the default stays five.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    min_search_val_days: int = Field(default=5, ge=1)
+
+
 class DatasetSpec(BaseModel):
     """Executable dataset definition. Adding a surface is a new folder of these."""
 
@@ -280,6 +292,7 @@ class DatasetSpec(BaseModel):
     checks: list[SpecCheck] = Field(default_factory=list)
     candidate_bounds: CandidateBounds = Field(default_factory=CandidateBounds)
     output: OutputSpec = Field(default_factory=OutputSpec)
+    preflight: PreflightSpec = Field(default_factory=PreflightSpec)
     primary_metric: str | None = None
     root: Path | None = Field(default=None, exclude=True)
 

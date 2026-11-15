@@ -13,12 +13,13 @@ from amt import volume
 from amt.config import load_settings
 from amt.deploy import _git_sha, freshness_token
 from amt.job_params import build_job_params
-from amt.jobs_backend import make_backend
+from amt.jobs_backend import FakeJobs, make_backend
 from amt.ladder import build_ladder_report, ladder_jobs
 from amt.noise import build_noise_report, round0_jobs
 from amt.schemas import Brief
 from amt.scores import scores_path
 from amt.signoff import write_ladder_report, write_noise_report
+from amt.volume import VolumeError
 from harness.ladder import LADDER_DESIGNS
 
 
@@ -99,10 +100,17 @@ def collect_ladder(
     return report.status, written
 
 
-def submit_dataset(root: Path, spec: str) -> str:
+def submit_dataset(
+    root: Path,
+    spec: str,
+    *,
+    preflight_slice: str = "",
+    positive_grades: str = "",
+) -> str:
     settings = load_settings(root)
     backend = make_backend(root)
-    token = f"build:{spec}:{freshness_token(root, Path(spec).name)}"
+    mode = preflight_slice or "full"
+    token = f"build:{spec}:{freshness_token(root, Path(spec).name)}:{mode}"
     state = _load_state(root, f"build-{Path(spec).name}")
     cached = state.get(token)
     if cached and _run_is_reusable(root, str(cached)):
@@ -114,6 +122,8 @@ def submit_dataset(root: Path, spec: str) -> str:
         "catalog": settings.catalog,
         "schema": settings.schema_name,
         "output_dir": "",
+        "preflight_slice": preflight_slice,
+        "positive_grades": positive_grades,
     }
     run_id = backend.submit(
         job="build_dataset",
@@ -123,7 +133,30 @@ def submit_dataset(root: Path, spec: str) -> str:
     )
     state[token] = run_id
     _save_state(root, f"build-{Path(spec).name}", state)
+    spec_name, spec_hash = _spec_identity(root, spec)
+    _remember_run(
+        root,
+        run_id,
+        {
+            "spec": spec,
+            "spec_name": spec_name,
+            "spec_hash": spec_hash,
+            "catalog": settings.catalog,
+            "schema": settings.schema_name,
+            "preflight_slice": preflight_slice,
+            "positive_grades": positive_grades,
+        },
+    )
     return run_id
+
+
+def fetch_job_failure(root: Path, run_id: str) -> dict:
+    """Read ``failure.json`` for a build run, or the Jobs get-output error."""
+
+    direct = _read_failure_file(root, run_id)
+    if direct is not None:
+        return direct
+    return _failure_from_output(root, run_id)
 
 
 def wait_job(root: Path, job_run_id: str) -> dict:
@@ -334,6 +367,108 @@ def _ladder_cell(row: dict) -> dict:
         "seed": int(tags.get("seed") or 0),
         "split": "search_val",
         "metric": float(row.get("metric") or 0.0),
+    }
+
+
+def _run_record_path(root: Path, run_id: str) -> Path:
+    return root / "runs" / "jobs" / f"{run_id}.json"
+
+
+def _remember_run(root: Path, run_id: str, payload: dict) -> None:
+    path = _run_record_path(root, run_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def _load_run_record(root: Path, run_id: str) -> dict:
+    path = _run_record_path(root, run_id)
+    if not path.is_file():
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return payload if isinstance(payload, dict) else {}
+
+
+def _spec_identity(root: Path, spec: str) -> tuple[str, str]:
+    from harness.data.contract import load_spec
+
+    path = Path(spec)
+    if not path.is_absolute():
+        path = root / path
+    if not path.exists():
+        return Path(spec).name, ""
+    loaded = load_spec(path)
+    return loaded.name, loaded.spec_hash()
+
+
+def _failure_file(root: Path, run_id: str) -> Path | None:
+    record = _load_run_record(root, run_id)
+    name = str(record.get("spec_name") or "")
+    digest = str(record.get("spec_hash") or "")
+    catalog = str(record.get("catalog") or "")
+    schema = str(record.get("schema") or "")
+    if not name or not digest or not catalog or not schema:
+        return None
+    from harness.data.build_dataset import failure_dir
+
+    return failure_dir(catalog, schema, name, digest) / "failure.json"
+
+
+def _read_failure_file(root: Path, run_id: str) -> dict | None:
+    remote_path = _failure_file(root, run_id)
+    if remote_path is None:
+        return None
+    if remote_path.is_file():
+        return json.loads(remote_path.read_text(encoding="utf-8"))
+    remote = remote_path.as_posix()
+    if not remote.startswith("/Volumes"):
+        return None
+    downloaded = root / "runs" / "jobs" / f"{run_id}-failure.json"
+    try:
+        volume.get(root, remote, downloaded)
+    except VolumeError:
+        return None
+    if not downloaded.is_file():
+        return None
+    return json.loads(downloaded.read_text(encoding="utf-8"))
+
+
+def _run_output(root: Path, run_id: str) -> dict:
+    backend = make_backend(root)
+    if isinstance(backend, FakeJobs):
+        path = root / "runs" / "jobs" / f"{run_id}-output.json"
+        if not path.is_file():
+            return {}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    from amt.jobs_backend import _run_json, databricks_bin
+
+    return _run_json(
+        [databricks_bin(), "api", "get", f"/api/2.1/jobs/runs/get-output?run_id={run_id}"],
+        cwd=root,
+    )
+
+
+def _failure_from_output(root: Path, run_id: str) -> dict:
+    response = _run_output(root, run_id)
+    error = response.get("error") or ""
+    if isinstance(error, dict):
+        message = str(error.get("message") or error)
+        exc_type = str(error.get("error_class") or error.get("type") or "JobOutput")
+    else:
+        message = str(error)
+        exc_type = "JobOutput"
+    if not message:
+        message = str(response.get("metadata") or f"no failure.json for {run_id}")
+    return {
+        "exception_type": exc_type,
+        "message": message,
+        "traceback": str(response.get("error_trace") or ""),
+        "kind": "",
+        "examples": [],
+        "fragment": "",
+        "fragment_path": "",
+        "source_schemas": {},
+        "source": "jobs/runs/get-output",
     }
 
 
