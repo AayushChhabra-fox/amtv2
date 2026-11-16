@@ -11,13 +11,24 @@ from amt.config import Settings, load_settings
 def manifest_hash(root: Path, spec_name: str) -> str:
     """Hash recorded by ``amt dataset build``. Empty when the manifest is local-only."""
 
-    for candidate in (
+    named = (
         root / "runs" / spec_name / "manifest.json",
         root / "runs" / f"round0-{spec_name}" / "manifest.json",
-    ):
-        if candidate.is_file():
+    )
+    for candidate in named:
+        if not candidate.is_file():
+            continue
+        payload = json.loads(candidate.read_text(encoding="utf-8"))
+        value = str(payload.get("content_hash") or payload.get("spec_hash") or "")
+        if value:
+            return value
+    ready = root / "gates" / "ready"
+    if ready.is_dir():
+        for candidate in sorted(ready.glob("*/manifest.json")):
             payload = json.loads(candidate.read_text(encoding="utf-8"))
-            value = str(payload.get("content_hash") or payload.get("spec_hash") or "")
+            if payload.get("dataset") != spec_name:
+                continue
+            value = str(payload.get("spec_hash") or payload.get("content_hash") or "")
             if value:
                 return value
     return "unhashed"

@@ -118,6 +118,10 @@ class RunView(BaseModel):
     git_sha: str = "unknown"
     mlflow_run_id: str | None = None
     job_run_id: str | None = None
+    model_uri: str | None = None
+    native_model_uri: str | None = None
+    native_flavor: str | None = None
+    dataset_version: dict[str, str] | None = None
 
 
 class NodeDecision(BaseModel):
@@ -1064,6 +1068,10 @@ def _ledger_from(run_id: str, view: RunView, decision: NodeDecision) -> LedgerRo
         git_sha=view.git_sha,
         mlflow_run_id=view.mlflow_run_id,
         job_run_id=view.job_run_id,
+        model_uri=view.model_uri,
+        native_model_uri=view.native_model_uri,
+        native_flavor=view.native_flavor,
+        dataset_version=view.dataset_version,
     )
 
 

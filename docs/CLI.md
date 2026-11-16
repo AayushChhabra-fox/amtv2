@@ -156,7 +156,16 @@ OUTCOME: no_winner
 
 `--scale calibration` is the optional one-time diagnostic. It forces K=1 and `approval_mode: every_stage`, and it stops before confirmation. `small` and `full` are still accepted; they do not replace the ready gate.
 
-On the Databricks backend, search submits `train` and confirmation submits `confirm`. Each candidate is uploaded to `<volume>/candidates/<run_id>/<node_id>/<git_sha>/`. A submit is refused when `harness/` or `resources/` have changed since `amt deploy`. The message is `redeploy: harness changed since deploy`.
+On the Databricks backend, search submits `train` and confirmation submits `confirm`. Each candidate is uploaded to `<volume>/candidates/<run_id>/<node_id>/<git_sha>/`. An R3 candidate or `lgbm_reference` run also logs `runs:/<mlflow_run_id>/model` (pyfunc over the full ranker) and, when the ranker wraps one estimator, `runs:/<mlflow_run_id>/native_model` (`lightgbm`, `xgboost`, `catboost`, `pytorch`, or `sklearn`). The same run records the train and eval Delta versions. A submit is refused when `harness/` or `resources/` have changed since `amt deploy`. The message is `redeploy: harness changed since deploy`.
+
+```python
+import mlflow
+
+pyfunc = mlflow.pyfunc.load_model("runs:/<mlflow_run_id>/model")
+scores = pyfunc.predict(spark.table("<catalog>.<schema>.<dataset>_search_val").toPandas())
+
+booster = mlflow.lightgbm.load_model("runs:/<mlflow_run_id>/native_model")
+```
 
 ### `resume`
 

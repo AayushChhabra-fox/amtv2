@@ -81,6 +81,7 @@ def open_final(root: Path, run_id: str, signer: str) -> Path:
         tags={"run_id": run_id, "node_id": winner.node_id, "split": "final_holdout"}
     )
     flag = _overfit_line(select, final_found)
+    model_lines = _model_lines(final_found)
     body = "\n".join(
         [
             f"# Final holdout {run_id}",
@@ -90,6 +91,8 @@ def open_final(root: Path, run_id: str, signer: str) -> Path:
             flag,
             "",
             *results,
+            "",
+            *model_lines,
             "",
         ]
     )
@@ -208,6 +211,31 @@ def _holdout_params(
         shared_cluster="true" if settings.fixed_cluster else "",
         device="cpu",
     )
+
+
+def _model_lines(found: dict | None) -> list[str]:
+    if not found:
+        return ["Model: not logged."]
+    lines = ["## Logged model", ""]
+    model_uri = found.get("model_uri")
+    native_uri = found.get("native_model_uri")
+    flavor = found.get("native_flavor")
+    version = found.get("dataset_version") or {}
+    if model_uri:
+        lines.append(f"- pyfunc: `{model_uri}`")
+        lines.append("  `mlflow.pyfunc.load_model(uri).predict(frame)`")
+    if native_uri and flavor and flavor != "none":
+        lines.append(f"- native {flavor}: `{native_uri}`")
+        lines.append(f"  `mlflow.{flavor}.load_model(uri)`")
+    spec_hash = version.get("dataset_spec_hash")
+    delta = version.get("eval_delta_version")
+    if spec_hash:
+        lines.append(f"- dataset spec `{spec_hash}`")
+    if delta:
+        lines.append(f"- eval delta version `{delta}`")
+    if len(lines) == 2:
+        return ["Model: not logged."]
+    return lines
 
 
 def _effect(row):

@@ -76,6 +76,69 @@ class TrainResult:
     traceback: str | None = None
 
 
+@dataclass
+class SplitLineage:
+    """One split's table identity, Delta version, and sample hash."""
+
+    name: str
+    table: str = ""
+    delta_version: int | None = None
+    content_hash: str = ""
+    query_ids_hash: str = ""
+    rows: int | None = None
+    queries: int | None = None
+    storage: str = "delta"
+
+    def as_dict(self) -> dict[str, str | int | None]:
+        return {
+            "name": self.name,
+            "table": self.table,
+            "delta_version": self.delta_version,
+            "content_hash": self.content_hash,
+            "query_ids_hash": self.query_ids_hash,
+            "rows": self.rows,
+            "queries": self.queries,
+            "storage": self.storage,
+        }
+
+
+@dataclass
+class DatasetLineage:
+    """Train and eval versions scored by one run."""
+
+    dataset: str
+    spec_hash: str
+    train: SplitLineage
+    evaluation: SplitLineage
+
+    def tags(self) -> dict[str, str]:
+        tags = {
+            "dataset_name": self.dataset,
+            "dataset_spec_hash": self.spec_hash,
+            "train_table": self.train.table,
+            "train_delta_version": _version_text(self.train.delta_version),
+            "train_content_hash": self.train.content_hash,
+            "train_query_ids_hash": self.train.query_ids_hash,
+            "eval_table": self.evaluation.table,
+            "eval_delta_version": _version_text(self.evaluation.delta_version),
+            "eval_content_hash": self.evaluation.content_hash,
+            "eval_query_ids_hash": self.evaluation.query_ids_hash,
+        }
+        return {key: value for key, value in tags.items() if value}
+
+    def as_dict(self) -> dict:
+        return {
+            "dataset": self.dataset,
+            "spec_hash": self.spec_hash,
+            "train": self.train.as_dict(),
+            "evaluation": self.evaluation.as_dict(),
+        }
+
+
+def _version_text(version: int | None) -> str:
+    return "" if version is None else str(version)
+
+
 def load_rows(path: Path) -> list[dict]:
     rows = []
     for line in path.read_text().splitlines():
@@ -93,12 +156,13 @@ def load_rung(
     schema: str,
     confirmation: bool,
     eval_split: str,
-) -> tuple[RankingFrame, RankingFrame]:
+) -> tuple[RankingFrame, RankingFrame, DatasetLineage]:
     """Read one rung from volume Parquet, or from Spark when the file is absent.
 
     Holdouts are read only when confirming. Parquet lives at
     ``<volume>/<spec>/<spec_hash>/splits/<split>.parquet``. The Spark fallback
-    uses ``toPandas`` rather than collecting rows one at a time.
+    uses ``toPandas`` rather than collecting rows one at a time, and pins the
+    Delta version recorded on the manifest when the cache is missing.
     """
 
     from pyspark.sql import SparkSession
@@ -119,26 +183,70 @@ def load_rung(
         times = query_times([row.asDict(recursive=True) for row in id_rows])
         return choose_query_ids(times, rule)
 
-    def pull(split: str, query_ids: list | None) -> RankingFrame:
-        frame = read_split_frame(spark, table(split), query_ids, parquet(split))
-        return RankingFrame.from_pandas(frame)
+    def pull(
+        split: str, query_ids: list | None, query_hash: str
+    ) -> tuple[RankingFrame, SplitLineage]:
+        recorded = (manifest.get("splits") or {}).get(split) or {}
+        version = recorded.get("delta_version")
+        version_int = int(version) if version is not None else None
+        path = parquet(split)
+        frame = read_split_frame(
+            spark, table(split), query_ids, path, delta_version=version_int
+        )
+        storage = "parquet" if path.is_file() else "delta"
+        resolved = version_int
+        if resolved is None and storage == "delta":
+            resolved = _describe_delta_version(spark, table(split))
+        lineage = SplitLineage(
+            name=split,
+            table=table(split),
+            delta_version=resolved,
+            content_hash=str(recorded.get("content_hash") or ""),
+            query_ids_hash=query_hash,
+            rows=recorded.get("rows"),
+            queries=recorded.get("queries"),
+            storage=storage,
+        )
+        return RankingFrame.from_pandas(frame), lineage
 
     if confirmation:
-        return pull("train", None), pull(eval_split, None)
-    rules = manifest["samples"][rung]
-    if rules["train"]["split"] != "train" or rules["eval"]["split"] != "search_val":
-        raise ValueError("search rungs only sample train and search_val")
-    train_ids = choose("train", rules["train"])
-    eval_ids = choose("search_val", rules["eval"])
-    if query_ids_hash(train_ids) != rules["train"]["query_ids_hash"]:
-        raise RuntimeError("train sample does not match the dataset manifest")
-    if query_ids_hash(eval_ids) != rules["eval"]["query_ids_hash"]:
-        raise RuntimeError("eval sample does not match the dataset manifest")
-    return pull("train", train_ids), pull("search_val", eval_ids)
+        train_frame, train_lineage = pull("train", None, "full")
+        eval_frame, eval_lineage = pull(eval_split, None, "full")
+    else:
+        rules = manifest["samples"][rung]
+        if rules["train"]["split"] != "train" or rules["eval"]["split"] != "search_val":
+            raise ValueError("search rungs only sample train and search_val")
+        train_ids = choose("train", rules["train"])
+        eval_ids = choose("search_val", rules["eval"])
+        if query_ids_hash(train_ids) != rules["train"]["query_ids_hash"]:
+            raise RuntimeError("train sample does not match the dataset manifest")
+        if query_ids_hash(eval_ids) != rules["eval"]["query_ids_hash"]:
+            raise RuntimeError("eval sample does not match the dataset manifest")
+        train_frame, train_lineage = pull("train", train_ids, rules["train"]["query_ids_hash"])
+        eval_frame, eval_lineage = pull("search_val", eval_ids, rules["eval"]["query_ids_hash"])
+    lineage = DatasetLineage(
+        dataset=spec.name,
+        spec_hash=str(manifest.get("spec_hash") or spec_hash),
+        train=train_lineage,
+        evaluation=eval_lineage,
+    )
+    return train_frame, eval_frame, lineage
 
 
-def read_split_frame(spark, table: str, query_ids: list | None, parquet_path: Path) -> pd.DataFrame:
-    """Filtered split as a DataFrame. Volume Parquet wins over a Spark scan."""
+def read_split_frame(
+    spark,
+    table: str,
+    query_ids: list | None,
+    parquet_path: Path,
+    *,
+    delta_version: int | None = None,
+) -> pd.DataFrame:
+    """Filtered split as a DataFrame. Volume Parquet wins over a Spark scan.
+
+    A recorded Delta version is applied with ``VERSION AS OF`` when the Parquet
+    cache is missing, so a later overwrite of the split table does not change
+    the rows a rerun scores.
+    """
 
     if parquet_path.is_file():
         frame = pd.read_parquet(parquet_path)
@@ -146,17 +254,52 @@ def read_split_frame(spark, table: str, query_ids: list | None, parquet_path: Pa
             return frame
         keep = {str(item) for item in query_ids}
         return frame.loc[frame["query_id"].astype(str).isin(keep)].reset_index(drop=True)
+    version = delta_version if delta_version is not None else _describe_delta_version(spark, table)
+    clause = f" VERSION AS OF {int(version)}" if version is not None else ""
     if query_ids is None:
-        spark_frame = spark.sql(f"SELECT * FROM {table}")
+        spark_frame = _sql_or_plain(
+            spark, f"SELECT * FROM {table}{clause}", f"SELECT * FROM {table}"
+        )
     else:
         spark.createDataFrame(
             [(str(query_id),) for query_id in query_ids],
             ["query_id"],
         ).createOrReplaceTempView("amt_keep_ids")
-        spark_frame = spark.sql(
+        pinned = (
+            f"SELECT t.* FROM {table}{clause} AS t "
+            "INNER JOIN amt_keep_ids AS k ON t.query_id = k.query_id"
+        )
+        plain = (
             f"SELECT t.* FROM {table} AS t INNER JOIN amt_keep_ids AS k ON t.query_id = k.query_id"
         )
+        spark_frame = _sql_or_plain(spark, pinned, plain)
     return spark_frame.toPandas()
+
+
+def _describe_delta_version(spark, table: str) -> int | None:
+    try:
+        rows = spark.sql(f"DESCRIBE HISTORY {table} LIMIT 1").collect()
+    except Exception:
+        return None
+    if not rows:
+        return None
+    row = rows[0].asDict(recursive=True) if hasattr(rows[0], "asDict") else dict(rows[0])
+    version = row.get("version")
+    if version is None:
+        return None
+    try:
+        return int(version)
+    except (TypeError, ValueError):
+        return None
+
+
+def _sql_or_plain(spark, pinned: str, plain: str):
+    if pinned == plain:
+        return spark.sql(plain)
+    try:
+        return spark.sql(pinned)
+    except Exception:
+        return spark.sql(plain)
 
 
 def load_dataset(dataset_dir: Path) -> tuple[dict, dict[str, list[dict]]]:
@@ -407,10 +550,37 @@ def make_same(ranker):
         return ranker
 
 
-def log_mlflow(result: TrainResult, experiment: str | None) -> str | None:
+def log_mlflow(
+    result: TrainResult,
+    experiment: str | None,
+    *,
+    ranker=None,
+    baseline: str = "",
+    model_path: Path | None = None,
+    train: RankingFrame | None = None,
+    evaluation: RankingFrame | None = None,
+    lineage: DatasetLineage | None = None,
+    rung: str = "",
+    family: str = "",
+    node_id: str = "",
+    run_id: str = "",
+    seed: int = 0,
+    git_sha: str = "",
+    eval_split: str = "search_val",
+) -> dict[str, str | None]:
+    """Log metrics, and at R3 the fitted ranker plus the dataset version."""
+
+    empty = {
+        "mlflow_run_id": None,
+        "model_uri": None,
+        "native_model_uri": None,
+        "native_flavor": None,
+    }
     if not experiment:
-        return None
+        return empty
     import mlflow
+
+    from harness.mlflow_model import log_r3_models, should_log_r3_model
 
     uri = os.environ.get("MLFLOW_TRACKING_URI", "databricks")
     mlflow.set_tracking_uri(uri)
@@ -422,7 +592,39 @@ def log_mlflow(result: TrainResult, experiment: str | None) -> str | None:
             mlflow.set_tag("failure_reason", result.reason[:500])
         if result.status == "ok":
             mlflow.log_metrics(result.metrics)
-        return active.info.run_id
+        logged = dict(empty)
+        logged["mlflow_run_id"] = active.info.run_id
+        if lineage is not None:
+            mlflow.set_tags(lineage.tags())
+        if (
+            should_log_r3_model(rung, baseline, result.status)
+            and ranker is not None
+            and train is not None
+            and evaluation is not None
+            and lineage is not None
+        ):
+            models = log_r3_models(
+                ranker=ranker,
+                baseline=baseline,
+                model_path=model_path,
+                train=train,
+                evaluation=evaluation,
+                lineage=lineage,
+                family=family,
+                node_id=node_id,
+                run_id=run_id,
+                seed=seed,
+                git_sha=git_sha,
+                eval_split=eval_split,
+            )
+            logged.update(
+                {
+                    "model_uri": models.get("model_uri"),
+                    "native_model_uri": models.get("native_model_uri"),
+                    "native_flavor": models.get("native_flavor"),
+                }
+            )
+        return logged
 
 
 def _guard_confirm_token(confirmation: bool, token: str) -> None:
@@ -540,9 +742,18 @@ def _execute(args: argparse.Namespace) -> None:
             confirmation=args.confirmation,
             eval_split=eval_split,
         )
+        query_hash = "full" if args.confirmation else ""
+        lineage = DatasetLineage(
+            dataset=spec.name,
+            spec_hash=str(manifest.get("spec_hash") or spec.spec_hash()),
+            train=SplitLineage(name="train", query_ids_hash=query_hash, storage="jsonl"),
+            evaluation=SplitLineage(
+                name=eval_split, query_ids_hash=query_hash, storage="jsonl"
+            ),
+        )
     else:
         manifest = json.loads((dataset_dir / "manifest.json").read_text())
-        train, evaluation = load_rung(
+        train, evaluation, lineage = load_rung(
             spec,
             manifest,
             args.rung,
@@ -636,12 +847,31 @@ def _execute(args: argparse.Namespace) -> None:
     if requirements_sha:
         result.metrics["install_s"] = round(install_s, 4)
         result.tags["requirements_sha"] = requirements_sha
-    run_id = log_mlflow(result, args.experiment_name or None)
+    logged = log_mlflow(
+        result,
+        args.experiment_name or None,
+        ranker=ranker,
+        baseline=args.baseline or "",
+        model_path=None if args.baseline else model_path,
+        train=train,
+        evaluation=evaluation,
+        lineage=lineage,
+        rung=args.rung,
+        family=args.family,
+        node_id=args.node_id or args.candidate_id,
+        run_id=args.run_id or args.batch,
+        seed=args.seed,
+        git_sha=args.git_sha,
+        eval_split=eval_split,
+    )
     payload = {
         "status": result.status,
         "reason": result.reason,
         "metrics": result.metrics,
-        "mlflow_run_id": run_id,
+        "mlflow_run_id": logged.get("mlflow_run_id"),
+        "model_uri": logged.get("model_uri"),
+        "native_model_uri": logged.get("native_model_uri"),
+        "native_flavor": logged.get("native_flavor"),
     }
     print(json.dumps(payload))
     if result.status == "ok" and args.confirmation and args.confirm_token:

@@ -370,6 +370,10 @@ class LedgerRow(BaseModel):
     git_sha: str = Field(min_length=1)
     mlflow_run_id: str | None = None
     job_run_id: str | None = None
+    model_uri: str | None = None
+    native_model_uri: str | None = None
+    native_flavor: str | None = None
+    dataset_version: dict[str, str] | None = None
 
     @model_validator(mode="before")
     @classmethod

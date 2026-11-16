@@ -552,6 +552,30 @@ def _metric_row(mlflow_run_id: str | None, metrics: dict, tags: dict) -> dict:
     ):
         if key in metrics:
             found[key] = metrics[key]
+    if mlflow_run_id and tags.get("model_artifact_path") == "model":
+        found["model_uri"] = f"runs:/{mlflow_run_id}/model"
+    if mlflow_run_id and tags.get("native_model_artifact_path") == "native_model":
+        found["native_model_uri"] = f"runs:/{mlflow_run_id}/native_model"
+    if tags.get("native_flavor"):
+        found["native_flavor"] = tags["native_flavor"]
+    version = {
+        key: str(tags[key])
+        for key in (
+            "dataset_name",
+            "dataset_spec_hash",
+            "train_table",
+            "train_delta_version",
+            "train_content_hash",
+            "train_query_ids_hash",
+            "eval_table",
+            "eval_delta_version",
+            "eval_content_hash",
+            "eval_query_ids_hash",
+        )
+        if tags.get(key)
+    }
+    if version:
+        found["dataset_version"] = version
     return found
 
 

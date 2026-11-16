@@ -167,6 +167,13 @@ Scores the top R3 survivors (kept or promoted), plus production and the LightGBM
 
 On the v3 `no_winner` run, `c03` was still a kept R3 row, so final opened and scored `c03`, production, and `lgbm_reference`. If there is no R3 survivor at all, final exits `1` and the holdout stays closed. Do not loosen `min_effect` after sign-off.
 
+R3 candidate and `lgbm_reference` runs log a loadable model next to the metrics. `runs/<id>/report.md` lists `runs:/<mlflow_run_id>/model`. When the ranker wraps one LightGBM, XGBoost, CatBoost, PyTorch, or scikit-learn estimator, the same run also has `runs:/<mlflow_run_id>/native_model`. Load the pyfunc when you want scores on a raw split frame, and the native flavor when you want feature importance or the booster itself. The run tags `dataset_spec_hash` and `eval_delta_version` name the table version that was scored.
+
+```python
+pyfunc = mlflow.pyfunc.load_model("runs:/<mlflow_run_id>/model")
+scores = pyfunc.predict(spark.table("product_api_dev.amt.nfy_article_rerank_gold_search_val").limit(100).toPandas())
+```
+
 ```bash
 uv run amt reproduce --run-id nfy-demo-v3 --node <winner>
 ```

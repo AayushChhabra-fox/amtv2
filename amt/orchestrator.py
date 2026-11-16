@@ -826,6 +826,10 @@ def _search_prune(state: RunState, brief: Brief, root: Path, backend: object) ->
                 git_sha=state.git_sha,
                 mlflow_run_id=None if found is None else found.get("mlflow_run_id"),
                 job_run_id=record.get("job_run_id"),
+                model_uri=None if found is None else found.get("model_uri"),
+                native_model_uri=None if found is None else found.get("native_model_uri"),
+                native_flavor=None if found is None else found.get("native_flavor"),
+                dataset_version=None if found is None else found.get("dataset_version"),
             )
         )
     if not views:

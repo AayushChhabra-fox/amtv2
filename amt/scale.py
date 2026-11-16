@@ -567,6 +567,23 @@ def render_run_report(
     else:
         for row in kills:
             lines.append(f"- {row.node_id} {row.rung}: {row.kill_reason}")
+    logged = [row for row in rows if row.rung == "R3" and row.model_uri]
+    lines.extend(["", "## R3 models", ""])
+    if not logged:
+        lines.append("(none)")
+    else:
+        for row in logged:
+            version = row.dataset_version or {}
+            spec_hash = version.get("dataset_spec_hash", "")
+            delta = version.get("eval_delta_version", "")
+            detail = f"- {row.node_id} seed {row.seed}: `{row.model_uri}`"
+            if row.native_model_uri:
+                detail += f" native `{row.native_model_uri}` ({row.native_flavor})"
+            if spec_hash:
+                detail += f" spec {spec_hash}"
+            if delta:
+                detail += f" eval delta {delta}"
+            lines.append(detail)
     lines.extend(["", "## Agent statistics", "", stats_summary(stats), ""])
     if not stats.nodes:
         lines.append("(no node calls)")

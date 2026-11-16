@@ -406,6 +406,29 @@ def _stage(
     return table
 
 
+def _delta_history_head(executor: SparkExecutor, table: str) -> dict[str, Any]:
+    """Latest Delta commit for ``table``. Empty when the table has no history."""
+
+    try:
+        rows = executor.execute(f"DESCRIBE HISTORY {table} LIMIT 1")
+    except Exception:
+        return {}
+    if not rows:
+        return {}
+    row = rows[0]
+    found: dict[str, Any] = {}
+    version = row.get("version")
+    if version is not None:
+        try:
+            found["version"] = int(version)
+        except (TypeError, ValueError):
+            pass
+    timestamp = row.get("timestamp")
+    if timestamp is not None:
+        found["timestamp"] = str(timestamp)
+    return found
+
+
 def _spark_hash(executor: SparkExecutor, table: str) -> str:
     # A BIGINT sum of 64-bit hashes overflows; DECIMAL(38,0) holds it exactly.
     rows = executor.execute(
@@ -572,6 +595,11 @@ def _build_spark_impl(
     column_sets: dict[str, list[str]] = {}
     written: dict[str, str] = {}
     staged: list[str] = []
+    source_versions: dict[str, dict[str, Any]] = {}
+    for name, source in spec.sources.items():
+        head = _delta_history_head(executor, source.table)
+        if head:
+            source_versions[name] = {"table": source.table, **head}
     span_start, span_end = _full_span(spec)
     _prepare_sources(executor, spec, span_start, span_end)
     kept_sources: set[str] = set()
@@ -653,6 +681,11 @@ def _build_spark_impl(
             "content_hash": _spark_hash(executor, table),
             "content_hash_alg": "spark-xxhash64-decimal-sum-sha2",
         }
+        history = _delta_history_head(executor, table)
+        if "version" in history:
+            split_meta[split_name]["delta_version"] = history["version"]
+        if "timestamp" in history:
+            split_meta[split_name]["delta_timestamp"] = history["timestamp"]
         if split_name in metric_splits:
             needed = ["query_id", "item_id", "query_ts", "event_day", "label"]
             for check in spec.checks:
@@ -741,6 +774,7 @@ def _build_spark_impl(
         "samples": samples,
         "checks": checks,
         "tables": written,
+        "source_versions": source_versions,
         "modality": _spark_modality(executor, written, split_meta),
     }
     output_dir.mkdir(parents=True, exist_ok=True)

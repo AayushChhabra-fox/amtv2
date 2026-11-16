@@ -17,7 +17,7 @@ dependencies = [
 amt = "amt.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8.0", "ruff>=0.6"]
+dev = ["mlflow>=2.16", "pytest>=8.0", "ruff>=0.6"]
 models = [
     "catboost>=1.2.10",
     "torch>=2.15.0",
