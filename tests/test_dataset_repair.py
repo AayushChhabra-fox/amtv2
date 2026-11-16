@@ -386,7 +386,10 @@ def test_fetch_job_failure_reads_the_file_then_get_output(tmp_path: Path, monkey
 
     def fake_run_json(args, *, cwd):
         del cwd
-        seen["args"] = args
+        joined = " ".join(str(arg) for arg in args)
+        seen.setdefault("calls", []).append(joined)
+        if "runs/get?" in joined and "get-output" not in joined:
+            return {"tasks": [{"run_id": "task-9", "task_key": "build_dataset"}]}
         return {"error": "AnalysisException: cannot cast", "error_trace": "trace"}
 
     monkeypatch.setattr("amt.volume.get", fake_get)
@@ -396,7 +399,7 @@ def test_fetch_job_failure_reads_the_file_then_get_output(tmp_path: Path, monkey
     assert fallback["source"] == "jobs/runs/get-output"
     assert "cannot cast" in fallback["message"]
     assert fallback["traceback"] == "trace"
-    assert any("/api/2.1/jobs/runs/get-output?run_id=run-1" in arg for arg in seen["args"])
+    assert any("get-output?run_id=task-9" in call for call in seen["calls"])
 
 
 def test_local_preflight_cli_accepts_the_demo(capsys: pytest.CaptureFixture[str]) -> None:

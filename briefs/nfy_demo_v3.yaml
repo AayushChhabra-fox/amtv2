@@ -1,5 +1,5 @@
-name: nfy_demo_v2
-run_id: nfy-demo-v2
+name: nfy_demo_v3
+run_id: nfy-demo-v3
 approval_mode: none
 scale: search
 dataset_spec: datasets/nfy_article_rerank_gold
@@ -41,7 +41,7 @@ efficiency:
   serving:
     latency_p95_ms_per_100_candidates: 20
 budget:
-  total_dbu: 40
+  total_dbu: 60
   max_concurrent_jobs: 2
 mode: both
 off_limits:

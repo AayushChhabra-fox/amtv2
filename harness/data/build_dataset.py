@@ -18,8 +18,6 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from amt.modality import summarize_fields, summarize_rows
-
 
 def _bundle_root() -> Path:
     """Directory that contains ``harness/``. Databricks may copy the entry script."""
@@ -47,6 +45,7 @@ _ROOT = _bundle_root()
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from amt.modality import summarize_fields, summarize_rows  # noqa: E402
 from harness.data.assemble import (  # noqa: E402
     assemble_select_sql,
     candidate_bounds_sql,

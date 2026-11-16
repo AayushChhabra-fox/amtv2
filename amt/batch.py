@@ -435,6 +435,22 @@ def _read_failure_file(root: Path, run_id: str) -> dict | None:
     return json.loads(downloaded.read_text(encoding="utf-8"))
 
 
+def _task_run_id(root: Path, run_id: str) -> str:
+    """Resolve get-output to a single task. Multi-task parent runs refuse it."""
+
+    from amt.jobs_backend import _run_json, databricks_bin
+
+    response = _run_json(
+        [databricks_bin(), "api", "get", f"/api/2.1/jobs/runs/get?run_id={run_id}"],
+        cwd=root,
+    )
+    tasks = response.get("tasks") or []
+    if not tasks:
+        return run_id
+    task_id = tasks[0].get("run_id")
+    return str(task_id) if task_id is not None else run_id
+
+
 def _run_output(root: Path, run_id: str) -> dict:
     backend = make_backend(root)
     if isinstance(backend, FakeJobs):
@@ -445,8 +461,9 @@ def _run_output(root: Path, run_id: str) -> dict:
         return payload if isinstance(payload, dict) else {}
     from amt.jobs_backend import _run_json, databricks_bin
 
+    output_id = _task_run_id(root, run_id)
     return _run_json(
-        [databricks_bin(), "api", "get", f"/api/2.1/jobs/runs/get-output?run_id={run_id}"],
+        [databricks_bin(), "api", "get", f"/api/2.1/jobs/runs/get-output?run_id={output_id}"],
         cwd=root,
     )
 

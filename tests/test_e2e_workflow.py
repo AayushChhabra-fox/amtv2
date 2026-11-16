@@ -35,7 +35,7 @@ LADDER_METRICS = {
 
 
 def test_demo_briefs_use_the_constraint_schema() -> None:
-    for name in ("nfy_demo.yaml", "nfy_demo_v2.yaml"):
+    for name in ("nfy_demo.yaml", "nfy_demo_v3.yaml"):
         brief = load_brief(ROOT / "briefs" / name)
         assert brief.min_effect == "auto"
         assert brief.constraints.allow_gpu_serving is False

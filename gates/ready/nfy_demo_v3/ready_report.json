@@ -1,0 +1,102 @@
+{
+  "report": {
+    "brief_name": "nfy_demo_v3",
+    "budget_total_dbu": 60.0,
+    "dataset": "nfy_article_rerank_gold",
+    "evaluation": "ndcg@10_graded (impressed=0, bounce_or_click=1, engaged_read=2, deep_read=3)",
+    "kendall_tau": 0.866667,
+    "ladder_sha256": "9e5279ca0baca1a73175fcfc0ce4b5e876d46ae5f965bab0cc38ee1596c50f87",
+    "ladder_status": "pass",
+    "manifest_sha256": "3cb2245f57c2e6700258f3bb482f697b72c3ed71d78403a57628b26e8b60eebb",
+    "min_effect_mode": "auto",
+    "modality": {
+      "categorical_columns": [
+        "feat__article__bias",
+        "feat__article__category_slug",
+        "feat__article__complexity",
+        "feat__article__geo_scope",
+        "feat__article__primary_topic",
+        "feat__article__tone"
+      ],
+      "embedding_groups": [],
+      "numeric_count": 72,
+      "prod_signal_columns": [
+        "feat__prod_signals__breaking",
+        "feat__prod_signals__category",
+        "feat__prod_signals__continuity",
+        "feat__prod_signals__cosine",
+        "feat__prod_signals__entity_locations",
+        "feat__prod_signals__entity_orgs",
+        "feat__prod_signals__entity_people",
+        "feat__prod_signals__iptc_category",
+        "feat__prod_signals__local",
+        "feat__prod_signals__recency",
+        "feat__prod_signals__velocity",
+        "feat__prod_signals__visual_clickability"
+      ],
+      "query_count": 99702,
+      "row_count": 1866977,
+      "text_columns": []
+    },
+    "noise_sha256": "4c7dd44551d75dae68f467261e7de473e5118fc4ef1fcdf0c00af62c94c6b0bf",
+    "noise_status": "pass",
+    "paradigms": [
+      {
+        "ladder_family": "lgbm",
+        "name": "lgbm",
+        "reason": "lgbm fits the dataset and the brief constraints",
+        "viable": true
+      },
+      {
+        "ladder_family": "neural",
+        "name": "neural",
+        "reason": "neural fits the dataset and the brief constraints",
+        "viable": true
+      },
+      {
+        "ladder_family": "embedding",
+        "name": "embedding",
+        "reason": "embedding ladder needs feat__profile__emb* and feat__item__emb*",
+        "viable": false
+      },
+      {
+        "ladder_family": "linear_reweight",
+        "name": "linear_reweight",
+        "reason": "linear_reweight fits the dataset and the brief constraints",
+        "viable": true
+      },
+      {
+        "ladder_family": null,
+        "name": "text",
+        "reason": "needs text feat__ columns",
+        "viable": false
+      },
+      {
+        "ladder_family": null,
+        "name": "cross_encoder",
+        "reason": "needs text feat__ columns",
+        "viable": false
+      }
+    ],
+    "primary_metric": "ndcg@10_graded",
+    "problem_task_sha256": "cd6b5b5a5f8d78b0ad768713c26dbde947eacb4fbc4a2fe01f571772a656a33c",
+    "proposed_min_effect": 0.01,
+    "remediation": [],
+    "repair_hashes": [],
+    "repairs": [],
+    "resolved_min_effect": 0.019578,
+    "skip_r1": [],
+    "spec_path": "datasets/nfy_article_rerank_gold",
+    "spec_sha256": "58dd6c28ce91e2b710eda54e55c892496177c7952c2808c6c07ff5a1385cc065",
+    "status": "pass",
+    "unsupported_families": {
+      "embedding": "embedding ladder needs feat__profile__emb* and feat__item__emb*"
+    },
+    "viable_families": [
+      "lgbm",
+      "neural",
+      "linear_reweight"
+    ]
+  },
+  "report_sha256": "c0c19119f4f807d151fefcb495e752e6ad24feba9281b025066f6205facfe80f"
+}

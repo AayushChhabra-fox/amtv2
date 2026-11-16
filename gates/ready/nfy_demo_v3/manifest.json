@@ -1,0 +1,308 @@
+{
+  "checks": [
+    {
+      "detail": "{\"1\": 23590, \"3\": 57967, \"2\": 10348, \"0\": 699417}",
+      "name": "label_distribution:train",
+      "ok": true
+    },
+    {
+      "detail": "{}",
+      "name": "null_rates:train",
+      "ok": true
+    },
+    {
+      "detail": "{\"2026-10-05\": 5869, \"2026-10-01\": 5910, \"2026-10-03\": 5214, \"2026-10-04\": 5807, \"2026-10-08\": 5057, \"2026-10-02\": 5453, \"2026-10-07\": 5731, \"2026-10-06\": 5760}",
+      "name": "queries_per_day:train",
+      "ok": true
+    },
+    {
+      "detail": "{\"mean\": 17.66304323564206}",
+      "name": "candidates_per_query:train",
+      "ok": true
+    },
+    {
+      "detail": "{\"1\": 15349, \"3\": 37466, \"2\": 6931, \"0\": 478249}",
+      "name": "label_distribution:search_val",
+      "ok": true
+    },
+    {
+      "detail": "{}",
+      "name": "null_rates:search_val",
+      "ok": true
+    },
+    {
+      "detail": "{\"2026-10-09\": 5619, \"2026-10-12\": 5848, \"2026-10-11\": 5538, \"2026-10-10\": 5287, \"2026-10-13\": 5514}",
+      "name": "queries_per_day:search_val",
+      "ok": true
+    },
+    {
+      "detail": "{\"mean\": 19.34816226713659}",
+      "name": "candidates_per_query:search_val",
+      "ok": true
+    },
+    {
+      "detail": "{\"1\": 6194, \"3\": 15687, \"2\": 2974, \"0\": 186105}",
+      "name": "label_distribution:select_holdout",
+      "ok": true
+    },
+    {
+      "detail": "{}",
+      "name": "null_rates:select_holdout",
+      "ok": true
+    },
+    {
+      "detail": "{\"2026-10-15\": 5284, \"2026-10-14\": 5534}",
+      "name": "queries_per_day:select_holdout",
+      "ok": true
+    },
+    {
+      "detail": "{\"mean\": 19.500831946755408}",
+      "name": "candidates_per_query:select_holdout",
+      "ok": true
+    },
+    {
+      "detail": "{\"1\": 8967, \"3\": 21591, \"2\": 3790, \"0\": 292352}",
+      "name": "label_distribution:final_holdout",
+      "ok": true
+    },
+    {
+      "detail": "{}",
+      "name": "null_rates:final_holdout",
+      "ok": true
+    },
+    {
+      "detail": "{\"2026-10-16\": 5431, \"2026-10-18\": 5907, \"2026-10-17\": 4939}",
+      "name": "queries_per_day:final_holdout",
+      "ok": true
+    },
+    {
+      "detail": "{\"mean\": 20.07126620384592}",
+      "name": "candidates_per_query:final_holdout",
+      "ok": true
+    },
+    {
+      "detail": "harness 0.484752 expected 0.484752 tol 0.005",
+      "name": "prod_ndcg_reproduces",
+      "ok": true
+    },
+    {
+      "detail": "min daily queries 4939",
+      "name": "queries_per_day",
+      "ok": true
+    },
+    {
+      "detail": "{\"train\": 17.66304323564206, \"search_val\": 19.34816226713659, \"select_holdout\": 19.500831946755408, \"final_holdout\": 20.07126620384592}",
+      "name": "candidates_per_query_mean",
+      "ok": true
+    }
+  ],
+  "dataset": "nfy_article_rerank_gold",
+  "entity_type": "article",
+  "feature_groups": {
+    "article": {
+      "available_at": "article_ts",
+      "keys": [
+        "query_id",
+        "item_id"
+      ]
+    },
+    "context": {
+      "available_at": "feature_ts",
+      "keys": [
+        "query_id"
+      ]
+    },
+    "prod_signals": {
+      "available_at": "feature_ts",
+      "keys": [
+        "query_id",
+        "item_id"
+      ]
+    },
+    "user": {
+      "available_at": "feature_ts",
+      "keys": [
+        "query_id"
+      ]
+    },
+    "user_item": {
+      "available_at": "feature_ts",
+      "keys": [
+        "query_id",
+        "item_id"
+      ]
+    }
+  },
+  "forbidden_columns": [
+    "rank",
+    "total_score",
+    "item_index*",
+    "impressed",
+    "clicked",
+    "n_impressions",
+    "impression_*",
+    "exposure_status",
+    "read_quality",
+    "dwell_*",
+    "relevance_grade",
+    "label_matched",
+    "label_lag_seconds"
+  ],
+  "label_window": "1h",
+  "modality": {
+    "categorical_columns": [
+      "feat__article__bias",
+      "feat__article__category_slug",
+      "feat__article__complexity",
+      "feat__article__geo_scope",
+      "feat__article__primary_topic",
+      "feat__article__tone"
+    ],
+    "embedding_groups": [],
+    "numeric_count": 72,
+    "prod_signal_columns": [
+      "feat__prod_signals__breaking",
+      "feat__prod_signals__category",
+      "feat__prod_signals__continuity",
+      "feat__prod_signals__cosine",
+      "feat__prod_signals__entity_locations",
+      "feat__prod_signals__entity_orgs",
+      "feat__prod_signals__entity_people",
+      "feat__prod_signals__iptc_category",
+      "feat__prod_signals__local",
+      "feat__prod_signals__recency",
+      "feat__prod_signals__velocity",
+      "feat__prod_signals__visual_clickability"
+    ],
+    "query_count": 99702,
+    "row_count": 1866977,
+    "text_columns": []
+  },
+  "reference_scores": [
+    "production",
+    "recency"
+  ],
+  "samples": {
+    "R0": {
+      "eval": {
+        "mode": "seeded_cap",
+        "n": 500,
+        "n_queries": 500,
+        "query_ids_hash": "240f315553a3eec8205db3b3a4aa1816612ccf26427233745fde03475c548903",
+        "seed": 0,
+        "split": "search_val"
+      },
+      "train": {
+        "mode": "seeded_cap",
+        "n": 1000,
+        "n_queries": 1000,
+        "query_ids_hash": "b825cfdd630280dda303766900bc4a8032ee9961d843e11564f974ae582dcff9",
+        "seed": 0,
+        "split": "train"
+      }
+    },
+    "R1": {
+      "eval": {
+        "mode": "seeded_cap",
+        "n": 2000,
+        "n_queries": 2000,
+        "query_ids_hash": "242416c86221f27e12cc9badeff55496bdcfec04f57ea7d639fbe8cbb2ce258d",
+        "seed": 0,
+        "split": "search_val"
+      },
+      "train": {
+        "fraction": 0.1,
+        "mode": "most_recent_fraction",
+        "n_queries": 4480,
+        "query_ids_hash": "3b042d43204ae9f95c464c0b877e455f60eac98371c2587e4b8d38197a71250a",
+        "seed": 0,
+        "split": "train"
+      }
+    },
+    "R2": {
+      "eval": {
+        "mode": "seeded_cap",
+        "n": 5000,
+        "n_queries": 5000,
+        "query_ids_hash": "5089f0c5f1c447b94b48023b29f0f6daab44ddc410951618433c123b3697b878",
+        "seed": 0,
+        "split": "search_val"
+      },
+      "train": {
+        "fraction": 0.4,
+        "mode": "most_recent_fraction",
+        "n_queries": 17920,
+        "query_ids_hash": "e86e136958d71841fc83cdceacca666d885bda73312a64bf3f8e87d968b56f47",
+        "seed": 0,
+        "split": "train"
+      }
+    },
+    "R3": {
+      "eval": {
+        "mode": "all",
+        "n_queries": 27806,
+        "query_ids_hash": "efa9232491302b2b08a2acb2e7a944fc51e6bca3d1d0cdeff0a7b5924fbb8920",
+        "seed": 0,
+        "split": "search_val"
+      },
+      "train": {
+        "fraction": 1.0,
+        "mode": "most_recent_fraction",
+        "n_queries": 44801,
+        "query_ids_hash": "3fc045f19497c0648b58450faa6e3450ad7221a0e696333f1c9a0da5c1284752",
+        "seed": 0,
+        "split": "train"
+      }
+    }
+  },
+  "spec_hash": "7c1ce5868fe87b73c98d22af60d70a217f1add2fd00de4ba251a5b59215ffec4",
+  "splits": {
+    "final_holdout": {
+      "content_hash": "5f437b1b25b1ed172b3220b7138572c0a53bc761daa87de1499dba4a85b4b52c",
+      "content_hash_alg": "spark-xxhash64-decimal-sum-sha2",
+      "max_day": "2026-10-18",
+      "max_query_ts": "2026-10-18 23:59:58.276000",
+      "min_day": "2026-10-16",
+      "min_query_ts": "2026-10-16 00:00:00.779000",
+      "queries": 16277,
+      "rows": 326700
+    },
+    "search_val": {
+      "content_hash": "923b03b7eeb2f3504ea0465b5072e67bba5524a0407d898fabe226ec8dd2c669",
+      "content_hash_alg": "spark-xxhash64-decimal-sum-sha2",
+      "max_day": "2026-10-13",
+      "max_query_ts": "2026-10-13 21:59:58.939000",
+      "min_day": "2026-10-09",
+      "min_query_ts": "2026-10-09 00:00:05.269000",
+      "queries": 27806,
+      "rows": 537995
+    },
+    "select_holdout": {
+      "content_hash": "d1e02895e3303d74f0c4cfc5aa4b748ac91a0ed44d47a125435e2899fdd3e02d",
+      "content_hash_alg": "spark-xxhash64-decimal-sum-sha2",
+      "max_day": "2026-10-15",
+      "max_query_ts": "2026-10-15 21:59:43.002000",
+      "min_day": "2026-10-14",
+      "min_query_ts": "2026-10-14 00:00:05.704000",
+      "queries": 10818,
+      "rows": 210960
+    },
+    "train": {
+      "content_hash": "222a49aea666b6598440a833c831464b80720971b1ba33642874e478d1f5b798",
+      "content_hash_alg": "spark-xxhash64-decimal-sum-sha2",
+      "max_day": "2026-10-08",
+      "max_query_ts": "2026-10-08 21:59:50.905000",
+      "min_day": "2026-10-01",
+      "min_query_ts": "2026-10-01 00:00:01.653000",
+      "queries": 44801,
+      "rows": 791322
+    }
+  },
+  "tables": {
+    "final_holdout": "`product_api_dev`.`amt`.`nfy_article_rerank_gold_final_holdout`",
+    "search_val": "`product_api_dev`.`amt`.`nfy_article_rerank_gold_search_val`",
+    "select_holdout": "`product_api_dev`.`amt`.`nfy_article_rerank_gold_select_holdout`",
+    "train": "`product_api_dev`.`amt`.`nfy_article_rerank_gold_train`"
+  },
+  "task_type": "ranking"
+}

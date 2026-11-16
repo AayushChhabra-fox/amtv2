@@ -1,0 +1,246 @@
+{
+  "report": {
+    "dataset": "nfy_article_rerank_gold",
+    "expected_cells": 36,
+    "family_key": "embedding+lgbm+linear_reweight+neural",
+    "family_set": [
+      "lgbm",
+      "neural",
+      "linear_reweight"
+    ],
+    "kendall_min": 0.6,
+    "kendall_n": 6,
+    "kendall_tau": 0.866667,
+    "missing": [],
+    "observed_cells": 36,
+    "orders": [
+      {
+        "bad_id": "lgbm_recency_category",
+        "bad_metric": 0.468407,
+        "checked": true,
+        "family": "lgbm",
+        "good_id": "lgbm_full",
+        "good_metric": 0.516494,
+        "holds": true,
+        "rung": "R1"
+      },
+      {
+        "bad_id": "lgbm_recency_category",
+        "bad_metric": 0.461011,
+        "checked": true,
+        "family": "lgbm",
+        "good_id": "lgbm_full",
+        "good_metric": 0.520756,
+        "holds": true,
+        "rung": "R2"
+      },
+      {
+        "bad_id": "lgbm_recency_category",
+        "bad_metric": 0.454845,
+        "checked": true,
+        "family": "lgbm",
+        "good_id": "lgbm_full",
+        "good_metric": 0.51776,
+        "holds": true,
+        "rung": "R3"
+      },
+      {
+        "bad_id": "neural_label_shuffled",
+        "bad_metric": 0.449397,
+        "checked": true,
+        "family": "neural",
+        "good_id": "neural_normal",
+        "good_metric": 0.475357,
+        "holds": true,
+        "rung": "R1"
+      },
+      {
+        "bad_id": "neural_label_shuffled",
+        "bad_metric": 0.440936,
+        "checked": true,
+        "family": "neural",
+        "good_id": "neural_normal",
+        "good_metric": 0.47417,
+        "holds": true,
+        "rung": "R2"
+      },
+      {
+        "bad_id": "neural_label_shuffled",
+        "bad_metric": 0.449997,
+        "checked": true,
+        "family": "neural",
+        "good_id": "neural_normal",
+        "good_metric": 0.469169,
+        "holds": true,
+        "rung": "R3"
+      },
+      {
+        "bad_id": "linear_label_shuffled",
+        "bad_metric": 0.45935,
+        "checked": true,
+        "family": "linear_reweight",
+        "good_id": "linear_fitted",
+        "good_metric": 0.484475,
+        "holds": true,
+        "rung": "R1"
+      },
+      {
+        "bad_id": "linear_label_shuffled",
+        "bad_metric": 0.468366,
+        "checked": true,
+        "family": "linear_reweight",
+        "good_id": "linear_fitted",
+        "good_metric": 0.485838,
+        "holds": true,
+        "rung": "R2"
+      },
+      {
+        "bad_id": "linear_label_shuffled",
+        "bad_metric": 0.456046,
+        "checked": true,
+        "family": "linear_reweight",
+        "good_id": "linear_fitted",
+        "good_metric": 0.481203,
+        "holds": true,
+        "rung": "R3"
+      }
+    ],
+    "r1_train_fraction": 0.1,
+    "remediation": [],
+    "scores": [
+      {
+        "design_id": "lgbm_full",
+        "family": "lgbm",
+        "metric": 0.516494,
+        "role": "good",
+        "rung": "R1"
+      },
+      {
+        "design_id": "lgbm_full",
+        "family": "lgbm",
+        "metric": 0.520756,
+        "role": "good",
+        "rung": "R2"
+      },
+      {
+        "design_id": "lgbm_full",
+        "family": "lgbm",
+        "metric": 0.51776,
+        "role": "good",
+        "rung": "R3"
+      },
+      {
+        "design_id": "lgbm_recency_category",
+        "family": "lgbm",
+        "metric": 0.468407,
+        "role": "bad",
+        "rung": "R1"
+      },
+      {
+        "design_id": "lgbm_recency_category",
+        "family": "lgbm",
+        "metric": 0.461011,
+        "role": "bad",
+        "rung": "R2"
+      },
+      {
+        "design_id": "lgbm_recency_category",
+        "family": "lgbm",
+        "metric": 0.454845,
+        "role": "bad",
+        "rung": "R3"
+      },
+      {
+        "design_id": "neural_normal",
+        "family": "neural",
+        "metric": 0.475357,
+        "role": "good",
+        "rung": "R1"
+      },
+      {
+        "design_id": "neural_normal",
+        "family": "neural",
+        "metric": 0.47417,
+        "role": "good",
+        "rung": "R2"
+      },
+      {
+        "design_id": "neural_normal",
+        "family": "neural",
+        "metric": 0.469169,
+        "role": "good",
+        "rung": "R3"
+      },
+      {
+        "design_id": "neural_label_shuffled",
+        "family": "neural",
+        "metric": 0.449397,
+        "role": "bad",
+        "rung": "R1"
+      },
+      {
+        "design_id": "neural_label_shuffled",
+        "family": "neural",
+        "metric": 0.440936,
+        "role": "bad",
+        "rung": "R2"
+      },
+      {
+        "design_id": "neural_label_shuffled",
+        "family": "neural",
+        "metric": 0.449997,
+        "role": "bad",
+        "rung": "R3"
+      },
+      {
+        "design_id": "linear_fitted",
+        "family": "linear_reweight",
+        "metric": 0.484475,
+        "role": "good",
+        "rung": "R1"
+      },
+      {
+        "design_id": "linear_fitted",
+        "family": "linear_reweight",
+        "metric": 0.485838,
+        "role": "good",
+        "rung": "R2"
+      },
+      {
+        "design_id": "linear_fitted",
+        "family": "linear_reweight",
+        "metric": 0.481203,
+        "role": "good",
+        "rung": "R3"
+      },
+      {
+        "design_id": "linear_label_shuffled",
+        "family": "linear_reweight",
+        "metric": 0.45935,
+        "role": "bad",
+        "rung": "R1"
+      },
+      {
+        "design_id": "linear_label_shuffled",
+        "family": "linear_reweight",
+        "metric": 0.468366,
+        "role": "bad",
+        "rung": "R2"
+      },
+      {
+        "design_id": "linear_label_shuffled",
+        "family": "linear_reweight",
+        "metric": 0.456046,
+        "role": "bad",
+        "rung": "R3"
+      }
+    ],
+    "skip_r1": [],
+    "status": "pass",
+    "suggested_r1_train_fraction": 0.4,
+    "unsupported_families": {
+      "embedding": "embedding ladder needs feat__profile__emb* and feat__item__emb*"
+    }
+  },
+  "report_sha256": "9e5279ca0baca1a73175fcfc0ce4b5e876d46ae5f965bab0cc38ee1596c50f87"
+}

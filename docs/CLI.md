@@ -7,7 +7,7 @@
 3. `amt run` searches until it prints an outcome. `amt resume` continues a saved run.
 4. `amt final` opens the final holdout once.
 
-The [operator runbook](phase2_runbook.md) is that sequence for `briefs/nfy_demo.yaml` and `briefs/nfy_demo_v2.yaml`. Run every command from the repository root. `run` uses the current directory. The other commands take `--root` and default to the current directory.
+The [operator runbook](phase2_runbook.md) is that sequence for `briefs/nfy_demo.yaml` and `briefs/nfy_demo_v3.yaml`. Run every command from the repository root. `run` uses the current directory. The other commands take `--root` and default to the current directory.
 
 ```bash
 uv run amt --help
